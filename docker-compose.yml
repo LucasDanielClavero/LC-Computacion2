@@ -1,9 +1,0 @@
-services:
-  monitor:
-    build: .
-    container_name: monitor_procesos_tp1
-    stdin_open: true
-    tty: true
-    pid: "host"
-    environment:
-      - TERM=xterm-256color
