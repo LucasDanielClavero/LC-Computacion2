@@ -23,7 +23,8 @@ La arquitectura inicia por el archivo procfs.py, este archivo contiene todas las
 Para clonar y ejecutar la aplicación interactiva TUI en un solo comando:
 
 bash
-docker compose run --rm --build monitor
+1) sudo docker compose run --rm --build monitor
+2) darle el permiso poniendo la contraseña
 
 9. **Lo que aprendiste**
 
