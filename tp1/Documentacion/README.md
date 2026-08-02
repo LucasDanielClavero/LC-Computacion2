@@ -4,6 +4,32 @@ Este Monitor nos permite observar multiples vistas de la informacion de los proc
 2. **Diagrama de arquitectura**
 La arquitectura inicia por el archivo procfs.py, este archivo contiene todas las funciones necesarias para leer los datos del directorio proc, los analizadores importaran y utilizaran estas funciones para poder leer aquellos datos del directorio proc que necesiten, hablando de la informacion de proc el recolector es el encargado de extraer dicha informacion constantemente y enviarla a las colas de cada analizador para que ellos usen lo que necesiten para posteriormente darle un formato y plasmarla en la snapshot global que la TUI (la interfaz de usuario) empleara para mostrarnos los distintos datos de cada proceso del sistema
 
+(este diagrama lo hice con IA)
+/proc (Directorio)
+       │
+ [ procfs.py ] ---- (Lee datos del sistema)
+       │
+ [ recolector.py ]
+       │
+       ├─────> Queue (Resumen)    ──> [ analizador_resumen ]   ────┐
+       ├─────> Queue (Memoria)    ──> [ analizador_memoria ]   ────┤
+       ├─────> Queue (FDs)        ──> [ analizador_fds ]       ────┤    Lock
+       ├─────> Queue (Scheduling) ──> [ analizador_scheduling ]────┼─> [ Manager Dict ]
+       ├─────> Queue (Señales)    ──> [ analizador_senales ]   ────┤   (snapshot_global)
+       ├─────> Queue (Entorno)    ──> [ analizador_entorno ]   ────┤          │
+       └─────> Queue (Jerarquía)  ──> [ analizador_jerarquia ] ────┘          │
+                                                                              │
+ [ tui.py (blessed + rich) ] <────────────────────────────────────────────────┘
+
+3. **Decisiones de diseño**
+Mecanismo de IPC (Colas): Elegí multiprocessing.Queue para enviar la lista de PIDs desde el recolector a los analizadores porque facilita un patrón productor-consumidor de forma segura y asíncrona
+
+Uso de Manager(): Se implementó un diccionario a través de un Manager (snapshot_global) en lugar de Value o Array porque permite almacenar estructuras de datos dinámicas y complejas
+
+Race Conditions: Para evitar colisiones cuando los 7 analizadores y la TUI acceden simultáneamente a la snapshot_global, se implementó un multiprocessing.Lock (lock_snapshot) que asegura el acceso exclusivo en operaciones críticas.
+
+Intervalos por defecto: El recolector actualiza los PIDs cada 2.0 segundos, mientras que la TUI escanea el teclado e intenta refrescar la pantalla hasta cada 1.0 segundo (ajustable).
+
 4. **Conceptos del curso aplicados**
 -Queue: para evitar condiciones de carrera implemente el uso de multiples queue para enviar de forma individual a cada analizador los datos de proc 
 
@@ -25,6 +51,11 @@ Para clonar y ejecutar la aplicación interactiva TUI en un solo comando:
 bash
 1) sudo docker compose run --rm --build monitor
 2) darle el permiso poniendo la contraseña
+
+8. **Decisiones sobre la TUI**
+rich: Se eligió por su facilidad para renderizar tablas complejas (Table), paneles (Panel) y textos formateados (Text)
+
+blessed: Se utilizó específicamente para manejar la entrada del teclado en crudo (inkey()) y ocultar el cursor,
 
 9. **Lo que aprendiste**
 
