@@ -430,8 +430,11 @@ def leer_loadavg():
         return ["0.00", "0.00", "0.00"]
 
 def leer_meminfo():
-    """Lee la memoria global y la swap."""
-    datos = {"MemTotal": 0, "MemFree": 0, "MemAvailable": 0, "SwapTotal": 0, "SwapFree": 0}
+    """Lee la memoria global y la swap, incluyendo Buffers y Cached."""
+    datos = {
+        "MemTotal": 0, "MemFree": 0, "MemAvailable": 0, 
+        "SwapTotal": 0, "SwapFree": 0, "Buffers": 0, "Cached": 0
+    }
     try:
         with open("/proc/meminfo", "r") as f:
             for linea in f:

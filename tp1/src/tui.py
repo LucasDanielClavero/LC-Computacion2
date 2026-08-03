@@ -57,6 +57,7 @@ def extraer_ejemplo_fd(info):
 def construir_tabla(vista, snapshot_completo, indice_sel, pid_pinned, filtro_cmd, filtro_user, orden_col):
     
     # --- VISTA 7: SISTEMA GLOBAL (No itera sobre PIDs) ---
+# Dentro de construir_tabla, reemplazá el bloque de la Vista 7 por esto:
     if vista in ["7", "g"]:
         table = Table(title="[bold green]Vista 7: Sistema Global[/bold green]", expand=True)
         table.add_column("Métrica del Sistema", style="cyan", justify="right")
@@ -72,17 +73,34 @@ def construir_tabla(vista, snapshot_completo, indice_sel, pid_pinned, filtro_cmd
         
         mem = sys_data.get("memoria", {})
         mt = mem.get("MemTotal", 0) / 1024
-        ma = mem.get("MemAvailable", 0) / 1024
+        mf = mem.get("MemFree", 0) / 1024
+        buff = mem.get("Buffers", 0) / 1024
+        cach = mem.get("Cached", 0) / 1024
         st = mem.get("SwapTotal", 0) / 1024
         sf = mem.get("SwapFree", 0) / 1024
+        
+        tot_proc = sys_data.get("total_procesos", 0)
+        tot_thr = sys_data.get("total_threads", 0)
+        zombies = sys_data.get("zombies", 0)
+        estados = sys_data.get("estados", {})
+        
+        # Formateo de los Tops
+        top_c = sys_data.get("top_cpu", [])
+        str_top_cpu = " | ".join([f"PID {p[0]}" for p in top_c]) if top_c else "N/A"
+        
+        top_m = sys_data.get("top_mem", [])
+        str_top_mem = " | ".join([f"PID {p[0]} ({p[1]/1024:.1f}MB)" for p in top_m]) if top_m else "N/A"
         
         table.add_row("CPU Global", f"{cpu}% de Uso Total")
         table.add_row("Load Average (1m, 5m, 15m)", load)
         table.add_row("Tiempo de Uptime", f"{horas}h {mins}m")
-        table.add_row("Memoria RAM", f"Total: {mt:.1f} MB | Disponible: {ma:.1f} MB")
+        table.add_row("Memoria RAM", f"Total: {mt:.1f} MB | Libre: {mf:.1f} MB | Buff: {buff:.1f} MB | Cach: {cach:.1f} MB")
         table.add_row("Memoria Swap", f"Total: {st:.1f} MB | Libre: {sf:.1f} MB")
+        table.add_row("Procesos y Hilos", f"Procesos: {tot_proc} | Threads: {tot_thr} | Zombies: {zombies}")
+        table.add_row("Estados Procesos", str(estados))
+        table.add_row("Top 3 (por CPU)", str_top_cpu)
+        table.add_row("Top 3 (por Memoria)", str_top_mem)
         
-        # Devolvemos la tabla directamente (no hay items seleccionables)
         return table, [], 0
     # -----------------------------------------------------
 
