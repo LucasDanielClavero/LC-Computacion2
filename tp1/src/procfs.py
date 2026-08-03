@@ -236,25 +236,46 @@ def leer_schedstat_proceso(pid):
 
 def leer_scheduling_stat(pid):
     """
-    Extrae la Prioridad (campo 18) y Nice (campo 19) desde /proc/<pid>/stat.
+    Extrae las métricas obligatorias de scheduling desde /proc/<pid>/stat.
+    Campos extraídos según man proc(5) considerando el offset por 'comm'.
     """
     ruta = f"/proc/{pid}/stat"
+    datos = {
+        "pgid": 0, "sid": 0, "utime": 0, "stime": 0, 
+        "priority": 0, "nice": 0, "rt_priority": 0, "policy": 0, "policy_name": "UNKNOWN"
+    }
+    
+    # Mapeo básico de políticas de Linux
+    politicas = {
+        0: "OTHER", 1: "FIFO", 2: "RR", 3: "BATCH", 5: "IDLE", 6: "DEADLINE"
+    }
+    
     try:
         with open(ruta, 'r') as f:
             contenido = f.read().strip()
             idx_cierre = contenido.rfind(')')
             if idx_cierre != -1:
                 campos = contenido[idx_cierre + 1:].strip().split()
-                # En campos_restantes:
-                # campo 18 (priority) es el índice 15
-                # campo 19 (nice) es el índice 16
-                return {
-                    "priority": int(campos[15]),
-                    "nice": int(campos[16])
-                }
+                
+                # Desplazamiento: campo 3 es campos[0]
+                datos["pgid"] = int(campos[2])       # Campo 5
+                datos["sid"] = int(campos[3])        # Campo 6
+                datos["utime"] = int(campos[11])     # Campo 14
+                datos["stime"] = int(campos[12])     # Campo 15
+                datos["priority"] = int(campos[15])  # Campo 18
+                datos["nice"] = int(campos[16])      # Campo 19
+                
+                # Los campos 40 y 41 pueden no estar en versiones hiper viejas de kernel,
+                # pero en Docker/Linux moderno siempre están.
+                if len(campos) >= 39:
+                    datos["rt_priority"] = int(campos[37]) # Campo 40
+                    datos["policy"] = int(campos[38])      # Campo 41
+                    datos["policy_name"] = politicas.get(datos["policy"], str(datos["policy"]))
+                    
     except (FileNotFoundError, ProcessLookupError, PermissionError, IndexError, ValueError):
         pass
-    return {"priority": 0, "nice": 0}
+        
+    return datos
 
 def leer_hilos_task(pid):
     """
@@ -431,3 +452,77 @@ def leer_uptime():
             return float(f.read().split()[0])
     except:
         return 0.0
+
+def leer_memoria_status(status):
+    """
+    Extrae las métricas de memoria desde el diccionario de /proc/<pid>/status.
+    Ahora incluye VmHWM y VmSwap como pide la consigna.
+    """
+    if not status:
+        return None
+        
+    return {
+        "vmsize": status.get('VmSize', '0 kB'),
+        "vmrss": status.get('VmRSS', '0 kB'),
+        "vmdata": status.get('VmData', '0 kB'),
+        "vmstk": status.get('VmStk', '0 kB'),
+        "vmexe": status.get('VmExe', '0 kB'),
+        "vmlib": status.get('VmLib', '0 kB'),
+        "vmhwm": status.get('VmHWM', '0 kB'),   # Agregado
+        "vmswap": status.get('VmSwap', '0 kB')  # Agregado
+    }
+
+def leer_page_faults(pid):
+    """
+    Lee /proc/<pid>/stat para obtener los Minor (campo 10) y Major (campo 12) page faults.
+    """
+    ruta = f"/proc/{pid}/stat"
+    try:
+        with open(ruta, 'r') as f:
+            contenido = f.read().strip()
+            idx_cierre = contenido.rfind(')')
+            if idx_cierre != -1:
+                campos = contenido[idx_cierre + 1:].strip().split()
+                # En campos_restantes tras el ')':
+                # El campo 3 (estado) es el índice 0
+                # El campo 10 (minflt) es el índice 7
+                # El campo 12 (majflt) es el índice 9
+                return {
+                    "minflt": int(campos[7]),
+                    "majflt": int(campos[9])
+                }
+    except (FileNotFoundError, ProcessLookupError, PermissionError, IndexError, ValueError):
+        pass
+    return {"minflt": 0, "majflt": 0}
+
+def agrupar_segmentos_memoria(regiones):
+    """
+    Recibe la lista devuelta por leer_maps_proceso() y agrupa 
+    los tamaños en KB (text, data, heap, stack, shared).
+    """
+    agrupados = {"text": 0, "data": 0, "heap": 0, "stack": 0, "shared": 0}
+
+    for reg in regiones:
+        # Calcular el tamaño de la región (fin - inicio)
+        try:
+            inicio_hex, fin_hex = reg["direccion"].split("-")
+            size_kb = (int(fin_hex, 16) - int(inicio_hex, 16)) // 1024
+        except ValueError:
+            size_kb = 0
+
+        perm = reg["permisos"]
+        path = reg["pathname"]
+
+        # Agrupación según consigna
+        if path == "[stack]":
+            agrupados["stack"] += size_kb
+        elif path == "[heap]":
+            agrupados["heap"] += size_kb
+        elif 's' in perm:
+            agrupados["shared"] += size_kb
+        elif 'x' in perm:  # Ejecutable suele ser código (text)
+            agrupados["text"] += size_kb
+        else:              # Resto suele ser data (inicializada/no inicializada)
+            agrupados["data"] += size_kb
+
+    return agrupados

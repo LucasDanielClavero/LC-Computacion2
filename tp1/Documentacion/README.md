@@ -16,8 +16,8 @@ La arquitectura inicia por el archivo procfs.py, este archivo contiene todas las
        ├─────> Queue (FDs)        ──> [ analizador_fds ]       ────┤    Lock
        ├─────> Queue (Scheduling) ──> [ analizador_scheduling ]────┼─> [ Manager Dict ]
        ├─────> Queue (Señales)    ──> [ analizador_senales ]   ────┤   (snapshot_global)
-       ├─────> Queue (Threads)    ──> [ analizador_entorno ]   ────┤          │
-       └─────> Queue (sistema)  ──> [ analizador_jerarquia ] ────┘          │
+       ├─────> Queue (Threads)    ──> [ analizador_Threads ]   ────┤          │
+       └─────> Queue (sistema)  ──> [ analizador_sistema ] ────┘          │
                                                                               │
  [ tui.py (blessed + rich) ] <────────────────────────────────────────────────┘
 

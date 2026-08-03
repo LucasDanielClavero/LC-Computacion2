@@ -1,13 +1,12 @@
 from procfs import (
     leer_status_proceso,
-    leer_schedstat_proceso,
-    leer_scheduling_stat,
-    leer_hilos_task
+    leer_scheduling_stat
 )
 
 def correr_analizador_scheduling(cola_pids, snapshot, lock):
     """
-    Proceso analizador de Hilos y Planificación (Scheduling).
+    Proceso analizador de Planificación (Scheduling).
+    Cumple con los requisitos obligatorios de la consigna.
     """
     print("[Analizador Scheduling] Iniciado y listo.")
     
@@ -23,25 +22,28 @@ def correr_analizador_scheduling(cola_pids, snapshot, lock):
             if not status:
                 continue
                 
-            schedstat = leer_schedstat_proceso(pid)
-            prio_nice = leer_scheduling_stat(pid)
-            hilos = leer_hilos_task(pid)
+            stat_data = leer_scheduling_stat(pid)
             
             # Cambios de contexto desde /proc/<pid>/status
             v_ctx = int(status.get('voluntary_ctxt_switches', 0))
             nv_ctx = int(status.get('nonvoluntary_ctxt_switches', 0))
             
+            # Afinidad de CPU
+            cpu_affinity = status.get('Cpus_allowed_list', 'N/A')
+            
             datos_sched[pid] = {
                 "pid": pid,
-                "priority": prio_nice["priority"],
-                "nice": prio_nice["nice"],
-                "run_time_ms": round(schedstat["run_time"] / 1_000_000, 2), # Pasamos nanosegundos a ms
-                "wait_time_ms": round(schedstat["wait_time"] / 1_000_000, 2),
-                "pcount": schedstat["pcount"],
+                "priority": stat_data["priority"],
+                "nice": stat_data["nice"],
+                "rt_priority": stat_data["rt_priority"],
+                "policy": stat_data["policy_name"],
+                "cpu_affinity": cpu_affinity,
                 "voluntary_ctx": v_ctx,
                 "nonvoluntary_ctx": nv_ctx,
-                "cant_hilos": len(hilos),
-                "hilos": hilos  # Lista de TIDs y sus estados para la vista extendida
+                "utime": stat_data["utime"],
+                "stime": stat_data["stime"],
+                "sid": stat_data["sid"],
+                "pgid": stat_data["pgid"]
             }
             
         # 3. Guardamos en el snapshot compartido de forma segura

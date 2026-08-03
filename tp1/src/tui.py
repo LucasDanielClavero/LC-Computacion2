@@ -174,10 +174,12 @@ def construir_tabla(vista, snapshot_completo, indice_sel, pid_pinned, filtro_cmd
         table.add_column("Ignoradas (Hex)", style="yellow")
         table.add_column("Capturadas (Hex)", style="green")
     elif vista in ["6", "p"]:
-        table.add_column("Prio/Nice", justify="center")
-        table.add_column("CPU Time (ms)", justify="right")
-        table.add_column("Wait (ms)", justify="right")
+        table.add_column("Prio/Nice/RT", justify="center")
+        table.add_column("Policy", style="magenta", justify="center")
+        table.add_column("CPU Affinity", justify="center")
+        table.add_column("uTime/sTime", justify="right")
         table.add_column("Vol/NonVol Ctx", justify="right")
+        table.add_column("SID/PGID", justify="right")
 
     max_filas = 16
     inicio = max(0, min(indice_sel - max_filas // 2, max(0, len(items) - max_filas)))
@@ -223,14 +225,31 @@ def construir_tabla(vista, snapshot_completo, indice_sel, pid_pinned, filtro_cmd
             table.add_row(prefix, pid, str(hex_ign)[:16], str(hex_cgt)[:16], style=estilo_fila)
 
         elif vista in ["6", "p"]:
-            prio = info.get("priority", 20)
-            nice = info.get("nice", 0)
-            cpu_t = parsear_kb_a_mb(info.get("run_time_ms") or info_res.get("run_time_ms")) * 1024.0
-            wait_t = parsear_kb_a_mb(info.get("wait_time_ms")) * 1024.0
+            # Obtenemos los nuevos datos que mandamos desde el analizador
+            prio = info.get("priority", "?")
+            nice = info.get("nice", "?")
+            rt = info.get("rt_priority", "?")
+            policy = info.get("policy", "?")
+            affinity = str(info.get("cpu_affinity", "N/A"))
+            utime = info.get("utime", 0)
+            stime = info.get("stime", 0)
             v_ctx = info.get("voluntary_ctx", 0)
             nv_ctx = info.get("nonvoluntary_ctx", 0)
-            table.add_row(prefix, pid, f"{prio}/{nice}", f"{cpu_t:.1f}", f"{wait_t:.1f}", f"{v_ctx}/{nv_ctx}", style=estilo_fila)
-
+            sid = info.get("sid", "?")
+            pgid = info.get("pgid", "?")
+            
+            # Agregamos la fila formateada
+            table.add_row(
+                prefix, 
+                pid, 
+                f"{prio}/{nice}/{rt}", 
+                str(policy), 
+                affinity, 
+                f"{utime}/{stime}", 
+                f"{v_ctx}/{nv_ctx}", 
+                f"{sid}/{pgid}", 
+                style=estilo_fila
+            )
     return table, items, len(items)
 
 
