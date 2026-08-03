@@ -1,93 +1,83 @@
-import time
-from multiprocessing import Process, Queue, Manager, Lock
-
-# Importamos nuestro módulo de señales
+import sys
+from multiprocessing import Process, Manager, Queue, Lock
 import senales
 
-from recolector import correr_recolector
+# --- IMPORTAMOS LOS 7 ANALIZADORES OBLIGATORIOS ---
 from analizadores.resumen import correr_analizador_resumen
 from analizadores.memoria import correr_analizador_memoria
 from analizadores.fds import correr_analizador_fds
-from analizadores.scheduling import correr_analizador_scheduling
+from analizadores.threads import correr_analizador_threads
 from analizadores.senales import correr_analizador_senales
-from analizadores.entorno import correr_analizador_entorno
-from analizadores.jerarquia import correr_analizador_jerarquia
+from analizadores.scheduling import correr_analizador_scheduling
+from analizadores.sistema import correr_analizador_sistema
+
+# Importamos el Recolector y la Interfaz Gráfica (TUI)
+from recolector import correr_recolector  # <-- Ajustá este import si tu recolector se llama distinto
 from tui import desplegar_tui
 
 def main():
-    # 0. Registrar los handlers de señales externas (SIGHUP, SIGUSR1, SIGUSR2, SIGINT)
-    senales.registrar_senales()
+    # 1. Configuramos el manejo de señales (SIGHUP, SIGINT, SIGTERM)
+    senales.configurar_manejadores_senales()
 
-    # 1. Creamos las 7 colas de comunicación
+    # 2. Inicializamos la Memoria Compartida (Snapshot y Lock)
+    manager = Manager()
+    snapshot_global = manager.dict()
+    lock_snapshot = manager.Lock()
+
+    # 3. Inicializamos las colas IPC para comunicar el Recolector con los Analizadores
     colas = {
         "resumen": Queue(),
         "memoria": Queue(),
         "fds": Queue(),
-        "scheduling": Queue(),
+        "threads": Queue(),
         "senales": Queue(),
-        "entorno": Queue(),
-        "jerarquia": Queue()
+        "scheduling": Queue(),
+        "sistema": Queue()
     }
-    
-    manager = Manager()
-    snapshot_global = manager.dict()
-    lock_snapshot = Lock()
-    
-    # 2. Proceso Recolector
-    proc_recolector = Process(
-        target=correr_recolector, 
-        args=(list(colas.values()),)
-    )
-    
-    # 3. Mapeo de Analizadores
-    procesos_analizadores = [
-        Process(target=correr_analizador_resumen, args=(colas["resumen"], snapshot_global, lock_snapshot)),
-        Process(target=correr_analizador_memoria, args=(colas["memoria"], snapshot_global, lock_snapshot)),
-        Process(target=correr_analizador_fds, args=(colas["fds"], snapshot_global, lock_snapshot)),
-        Process(target=correr_analizador_scheduling, args=(colas["scheduling"], snapshot_global, lock_snapshot)),
-        Process(target=correr_analizador_senales, args=(colas["senales"], snapshot_global, lock_snapshot)),
-        Process(target=correr_analizador_entorno, args=(colas["entorno"], snapshot_global, lock_snapshot)),
-        Process(target=correr_analizador_jerarquia, args=(colas["jerarquia"], snapshot_global, lock_snapshot)),
-    ]
-    
-    # 4. Iniciar todos los procesos
-    proc_recolector.start()
-    for p in procesos_analizadores:
-        p.start()
-        
-    try:
-        # Le damos 1.5 segundos para la primera recolección antes de abrir el TUI
-        time.sleep(1.5)
-        
-        # 5. Iniciar la interfaz TUI (que procesará flags de señales periódicamente)
-        desplegar_tui(snapshot_global, lock_snapshot)
 
+    # 4. Definimos los procesos
+    procesos = []
+
+    # Proceso Recolector (le pasamos el diccionario de colas)
+    p_recolector = Process(target=correr_recolector, args=(colas,))
+    procesos.append(p_recolector)
+
+    # Procesos Analizadores (Los 7 obligatorios de la consigna)
+    procesos.append(Process(target=correr_analizador_resumen, args=(colas["resumen"], snapshot_global, lock_snapshot)))
+    procesos.append(Process(target=correr_analizador_memoria, args=(colas["memoria"], snapshot_global, lock_snapshot)))
+    procesos.append(Process(target=correr_analizador_fds, args=(colas["fds"], snapshot_global, lock_snapshot)))
+    procesos.append(Process(target=correr_analizador_threads, args=(colas["threads"], snapshot_global, lock_snapshot)))
+    procesos.append(Process(target=correr_analizador_senales, args=(colas["senales"], snapshot_global, lock_snapshot)))
+    procesos.append(Process(target=correr_analizador_scheduling, args=(colas["scheduling"], snapshot_global, lock_snapshot)))
+    procesos.append(Process(target=correr_analizador_sistema, args=(colas["sistema"], snapshot_global, lock_snapshot)))
+
+    # 5. Iniciamos todos los procesos en paralelo
+    print("[Main] Iniciando procesos (Recolector + 7 Analizadores)...")
+    for p in procesos:
+        p.start()
+
+    # 6. Lanzamos la TUI en el hilo principal
+    try:
+        desplegar_tui(snapshot_global, lock_snapshot)
     except KeyboardInterrupt:
         pass
     finally:
-        print("\n[!] Finalizando procesos del monitor de forma limpia...")
+        # 7. Limpieza y apagado ordenado (Graceful Shutdown)
+        print("\n[Main] Apagando el sistema...")
+        senales.FLAG_SHUTDOWN = True
         
-        # A. Agrupamos todos los procesos hijos
-        todos_los_procesos = [proc_recolector] + procesos_analizadores
-        
-        # B. Liberamos las colas para evitar bloqueos de hilos (cancel_join_thread)
-        for q in colas.values():
-            q.cancel_join_thread()
-            q.close()
+        # 1. Pedimos amablemente que se cierren (SIGTERM)
+        for p in procesos:
+            p.terminate()
             
-        # C. Solicitamos la terminación de cada proceso hijo
-        for p in todos_los_procesos:
+        # 2. Esperamos que terminen, si están trabados los forzamos (SIGKILL)
+        for p in procesos:
+            p.join(timeout=0.5)  # Esperamos medio segundo por proceso
             if p.is_alive():
-                p.terminate()
-                
-        # D. Cierre con timeout e inactivación total (limpieza de Zombies)
-        for p in todos_los_procesos:
-            p.join(timeout=0.5)
-            if p.is_alive():
-                p.kill() # Por si no respondió a SIGTERM, forzamos SIGKILL
+                p.kill()         # Lo matamos forzadamente si se quedó bloqueado
                 p.join()
                 
-        print("[✓] Monitor finalizado con éxito.")
+        print("[Main] Todos los procesos finalizados correctamente.")
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

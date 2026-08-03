@@ -331,3 +331,103 @@ def leer_environ_proceso(pid):
     except (FileNotFoundError, ProcessLookupError, PermissionError):
         pass
     return env_vars
+
+def leer_detalles_hilo(pid, tid):
+    """
+    Lee stat, status y comm de un hilo (LWP) específico.
+    Devuelve un diccionario con las métricas del hilo.
+    """
+    ruta_task = f"/proc/{pid}/task/{tid}"
+    datos = {
+        "tid": tid,
+        "estado": "?",
+        "ticks": 0,
+        "comm": "[desconocido]",
+        "vol_ctx": 0,
+        "nonvol_ctx": 0
+    }
+
+    # 1. Leer nombre del hilo (comm)
+    try:
+        with open(f"{ruta_task}/comm", "r") as f:
+            datos["comm"] = f.read().strip()
+    except (FileNotFoundError, ProcessLookupError, PermissionError):
+        pass
+
+    # 2. Leer estado y ticks de CPU (stat)
+    try:
+        with open(f"{ruta_task}/stat", "r") as f:
+            contenido = f.read().strip()
+            idx = contenido.rfind(')')
+            if idx != -1:
+                campos = contenido[idx + 1:].strip().split()
+                # Campo 1 (estado), Campos 12 y 13 tras el ')' son utime y stime
+                datos["estado"] = campos[0]
+                datos["ticks"] = int(campos[11]) + int(campos[12])
+    except (FileNotFoundError, ProcessLookupError, PermissionError, IndexError, ValueError):
+        pass
+
+    # 3. Leer context switches (status)
+    try:
+        with open(f"{ruta_task}/status", "r") as f:
+            for linea in f:
+                if linea.startswith("voluntary_ctxt_switches:"):
+                    datos["vol_ctx"] = int(linea.split()[1])
+                elif linea.startswith("nonvoluntary_ctxt_switches:"):
+                    datos["nonvol_ctx"] = int(linea.split()[1])
+    except (FileNotFoundError, ProcessLookupError, PermissionError, IndexError, ValueError):
+        pass
+
+    return datos
+
+def leer_stat_global():
+    """Lee el uso total de CPU del sistema y el tiempo de boot."""
+    datos = {"total": 0, "idle": 0, "btime": 0}
+    try:
+        with open("/proc/stat", "r") as f:
+            for linea in f:
+                if linea.startswith("cpu "):
+                    campos = linea.split()
+                    valores = [int(x) for x in campos[1:]]
+                    # idle (indice 3) + iowait (indice 4)
+                    idle = valores[3] + (valores[4] if len(valores) > 4 else 0) 
+                    total = sum(valores)
+                    datos["total"] = total
+                    datos["idle"] = idle
+                elif linea.startswith("btime "):
+                    datos["btime"] = int(linea.split()[1])
+    except:
+        pass
+    return datos
+
+def leer_loadavg():
+    """Lee el promedio de carga del sistema (1, 5 y 15 min)."""
+    try:
+        with open("/proc/loadavg", "r") as f:
+            return f.read().strip().split()[:3]
+    except:
+        return ["0.00", "0.00", "0.00"]
+
+def leer_meminfo():
+    """Lee la memoria global y la swap."""
+    datos = {"MemTotal": 0, "MemFree": 0, "MemAvailable": 0, "SwapTotal": 0, "SwapFree": 0}
+    try:
+        with open("/proc/meminfo", "r") as f:
+            for linea in f:
+                partes = linea.split(":")
+                if len(partes) == 2:
+                    clave = partes[0].strip()
+                    if clave in datos:
+                        val = partes[1].replace("kB", "").strip()
+                        datos[clave] = int(val)
+    except:
+        pass
+    return datos
+
+def leer_uptime():
+    """Lee el tiempo de encendido del sistema en segundos."""
+    try:
+        with open("/proc/uptime", "r") as f:
+            return float(f.read().split()[0])
+    except:
+        return 0.0

@@ -55,32 +55,45 @@ def extraer_ejemplo_fd(info):
 
 
 def construir_tabla(vista, snapshot_completo, indice_sel, pid_pinned, filtro_cmd, filtro_user, orden_col):
+    
+    # --- VISTA 7: SISTEMA GLOBAL (No itera sobre PIDs) ---
+    if vista in ["7", "g"]:
+        table = Table(title="[bold green]Vista 7: Sistema Global[/bold green]", expand=True)
+        table.add_column("Métrica del Sistema", style="cyan", justify="right")
+        table.add_column("Valor Actual / Información", style="bold white")
+        
+        sys_data = snapshot_completo.get("sistema", {})
+        
+        cpu = sys_data.get("cpu_global_pct", 0.0)
+        load = " ".join(sys_data.get("loadavg", ["0.00", "0.00", "0.00"]))
+        up_s = sys_data.get("uptime", 0.0)
+        horas = int(up_s // 3600)
+        mins = int((up_s % 3600) // 60)
+        
+        mem = sys_data.get("memoria", {})
+        mt = mem.get("MemTotal", 0) / 1024
+        ma = mem.get("MemAvailable", 0) / 1024
+        st = mem.get("SwapTotal", 0) / 1024
+        sf = mem.get("SwapFree", 0) / 1024
+        
+        table.add_row("CPU Global", f"{cpu}% de Uso Total")
+        table.add_row("Load Average (1m, 5m, 15m)", load)
+        table.add_row("Tiempo de Uptime", f"{horas}h {mins}m")
+        table.add_row("Memoria RAM", f"Total: {mt:.1f} MB | Disponible: {ma:.1f} MB")
+        table.add_row("Memoria Swap", f"Total: {st:.1f} MB | Libre: {sf:.1f} MB")
+        
+        # Devolvemos la tabla directamente (no hay items seleccionables)
+        return table, [], 0
+    # -----------------------------------------------------
+
     mapa_claves = {
         "1": "resumen", "2": "memoria", "3": "fds", 
-        "4": "scheduling", "5": "senales", "6": "entorno", "7": "jerarquia"
+        "4": "threads", "5": "senales", "6": "scheduling"
     }
     clave_snap = mapa_claves.get(vista, "resumen")
     datos = dict(snapshot_completo.get(clave_snap, {}))
     datos_resumen = dict(snapshot_completo.get("resumen", {}))
     datos_memoria = dict(snapshot_completo.get("memoria", {}))
-    datos_jerarquia = dict(snapshot_completo.get("jerarquia", {}))
-
-    # Manejo especial Vista 7 (Jerarquía)
-    if vista in ["7", "g"]:
-        padres_map = datos_jerarquia.get("padres", {})
-        hijos_map = datos_jerarquia.get("hijos", {})
-        
-        # Si vienen diccionarios directos padres/hijos
-        if padres_map or hijos_map:
-            todos_pids = set(map(str, padres_map.keys())).union(set(map(str, hijos_map.keys()))).union(set(map(str, datos_resumen.keys())))
-            datos_j = {}
-            for p in todos_pids:
-                ppid_v = padres_map.get(p) or padres_map.get(int(p) if p.isdigit() else p)
-                hijos_v = hijos_map.get(p) or hijos_map.get(int(p) if p.isdigit() else p) or []
-                datos_j[p] = {"ppid": ppid_v, "hijos": hijos_v}
-            datos = datos_j
-        elif not datos:
-            datos = datos_resumen
 
     # 1. Filtrado
     items = []
@@ -134,10 +147,9 @@ def construir_tabla(vista, snapshot_completo, indice_sel, pid_pinned, filtro_cmd
         "1": "Vista 1: Resumen General",
         "2": "Vista 2: Uso de Memoria",
         "3": "Vista 3: Descriptores de Archivo (FDs)",
-        "4": "Vista 4: Scheduling e Hilos",
+        "4": "Vista 4: Threads (LWPs)",
         "5": "Vista 5: Máscaras de Señales",
-        "6": "Vista 6: Entorno de Ejecución (CWD)",
-        "7": "Vista 7: Jerarquía de Procesos"
+        "6": "Vista 6: Scheduling y Context Switches"
     }
 
     table = Table(title=f"[bold green]{titulos.get(vista, 'Vista')}[/bold green]", expand=True)
@@ -156,19 +168,16 @@ def construir_tabla(vista, snapshot_completo, indice_sel, pid_pinned, filtro_cmd
         table.add_column("Cant. FDs", justify="right")
         table.add_column("Ejemplo FD Abierto", style="dim white")
     elif vista in ["4", "t"]:
-        table.add_column("Prio/Nice", justify="center")
-        table.add_column("CPU Time (ms)", justify="right")
-        table.add_column("Wait (ms)", justify="right")
-        table.add_column("Hilos", justify="right")
+        table.add_column("Cant. Hilos", justify="right")
+        table.add_column("Detalle LWP (TID, Est, CPU%)", style="dim white")
     elif vista in ["5", "s"]:
         table.add_column("Ignoradas (Hex)", style="yellow")
         table.add_column("Capturadas (Hex)", style="green")
     elif vista in ["6", "p"]:
-        table.add_column("CWD (Directorio)", style="green")
-        table.add_column("Cant. Vars Env", justify="right")
-    elif vista in ["7", "g"]:
-        table.add_column("PPID (Padre)", justify="right")
-        table.add_column("Hijos / Información", style="magenta")
+        table.add_column("Prio/Nice", justify="center")
+        table.add_column("CPU Time (ms)", justify="right")
+        table.add_column("Wait (ms)", justify="right")
+        table.add_column("Vol/NonVol Ctx", justify="right")
 
     max_filas = 16
     inicio = max(0, min(indice_sel - max_filas // 2, max(0, len(items) - max_filas)))
@@ -199,12 +208,14 @@ def construir_tabla(vista, snapshot_completo, indice_sel, pid_pinned, filtro_cmd
             table.add_row(prefix, pid, str(cant_fds), str(ejemplo)[:60], style=estilo_fila)
 
         elif vista in ["4", "t"]:
-            prio = info.get("priority", 20)
-            nice = info.get("nice", 0)
-            cpu_t = parsear_kb_a_mb(info.get("run_time_ms") or info_res.get("run_time_ms")) * 1024.0
-            wait_t = parsear_kb_a_mb(info.get("wait_time_ms")) * 1024.0
-            hilos = info.get("cant_hilos") or info.get("threads") or 1
-            table.add_row(prefix, pid, f"{prio}/{nice}", f"{cpu_t:.1f}", f"{wait_t:.1f}", str(hilos), style=estilo_fila)
+            cant_hilos = info.get("cant_hilos", 0)
+            detalles = info.get("detalle_hilos", [])
+            if detalles:
+                # Mostramos métricas del primer hilo como resumen
+                ejemplo = f"TID {detalles[0]['tid']} ({detalles[0]['estado']}) CPU: {detalles[0]['cpu_porcentaje']}%"
+            else:
+                ejemplo = "(Sin hilos)"
+            table.add_row(prefix, pid, str(cant_hilos), str(ejemplo)[:60], style=estilo_fila)
 
         elif vista in ["5", "s"]:
             hex_ign = info.get("hex", {}).get("ignored") or info.get("sig_ign") or "0000000000000000"
@@ -212,16 +223,13 @@ def construir_tabla(vista, snapshot_completo, indice_sel, pid_pinned, filtro_cmd
             table.add_row(prefix, pid, str(hex_ign)[:16], str(hex_cgt)[:16], style=estilo_fila)
 
         elif vista in ["6", "p"]:
-            cwd = info.get("cwd") or "/"
-            envs = info.get("cant_vars_env") or info.get("env_count") or 0
-            table.add_row(prefix, pid, str(cwd)[:60], str(envs), style=estilo_fila)
-
-        elif vista in ["7", "g"]:
-            ppid = info.get("ppid") or info_res.get("ppid") or info.get("padre") or info_res.get("padre") or "?"
-            hijos = info.get("hijos") or info_res.get("hijos") or []
-            cant_hijos = len(hijos) if isinstance(hijos, (list, tuple, set)) else 0
-            det = f"Hijos directos: {cant_hijos}"
-            table.add_row(prefix, pid, str(ppid), det, style=estilo_fila)
+            prio = info.get("priority", 20)
+            nice = info.get("nice", 0)
+            cpu_t = parsear_kb_a_mb(info.get("run_time_ms") or info_res.get("run_time_ms")) * 1024.0
+            wait_t = parsear_kb_a_mb(info.get("wait_time_ms")) * 1024.0
+            v_ctx = info.get("voluntary_ctx", 0)
+            nv_ctx = info.get("nonvoluntary_ctx", 0)
+            table.add_row(prefix, pid, f"{prio}/{nice}", f"{cpu_t:.1f}", f"{wait_t:.1f}", f"{v_ctx}/{nv_ctx}", style=estilo_fila)
 
     return table, items, len(items)
 
@@ -263,7 +271,7 @@ def desplegar_tui(snapshot, lock):
                 texto_ayuda = (
                     "=== TECLAS OBLIGATORIAS DE NAVEGACIÓN ===\n\n"
                     "1-7 / r,m,f,t,s,p,g: Cambiar Vista\n"
-                    "↑ / ↓: Mover selección\n"
+                    "↑ / ↓: Mover selección (Vistas 1-6)\n"
                     "Enter: Fijar / Desfijar PID (Pin)\n"
                     "/: Filtrar por Nombre de Comando\n"
                     "u: Filtrar por Usuario\n"
@@ -284,7 +292,7 @@ def desplegar_tui(snapshot, lock):
                 f_usr_txt = f"F.User: '{filtro_user}'" if filtro_user else "F.User: Off"
 
                 header_str = (
-                    f"Vistas: [1/r]Res [2/m]Mem [3/f]FDs [4/t]Sch [5/s]Señ [6/p]Ent [7/g]Jer\n"
+                    f"Vistas: [1/r]Res [2/m]Mem [3/f]FDs [4/t]Thr [5/s]Señ [6/p]Sch [7/g]Sis\n"
                     f"Orden: {ordenes[idx_orden]} | {pin_txt} | {f_cmd_txt} | {f_usr_txt} | Refresco: {intervalo_refresco:.1f}s\n"
                     f"Teclas: [↑/↓] Mover | [Enter] Pin | [/] F.Cmd | [u] F.User | [c] Orden | [+/-] Vel | [h] Ayuda | [q] Salir"
                 )

@@ -1,5 +1,0 @@
-Adjunto un pdf con el desarrollo completo del tp mediante el uso de la IA Gemini y el promp de Tutor
-
-La verdad es que fue una genialidad como funciono la IA con su roll de tutor, pude aprender muchisimo sobre los conceptos a medida que desarrollabamos el tp y al irlo desarrollando parte por parte de forma secuencial puede entender muy bien el funcionamiento de todas las partes que componen el programa del monitor.
-
-Lo unico negativo que puedo decir sobre esta experiencia es que la IA a medida que realizas multiples interacciones se va olvidando cosas que se hicieron anteriormente en el chat y tambien va saliendose de su roll de tutor, a pesar de que le refresque el archivo multiples veces va perdiendo coherencia a medida que avanza el desarrollo, sin embargo las primeras horas fueron una genialidad y me ayudo a entender muchos conceptos

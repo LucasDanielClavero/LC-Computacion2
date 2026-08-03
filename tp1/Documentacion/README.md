@@ -49,8 +49,10 @@ Intervalos por defecto: El recolector actualiza los PIDs cada 2.0 segundos, mien
 Para clonar y ejecutar la aplicación interactiva TUI en un solo comando:
 
 bash
-1) sudo docker compose run --rm --build monitor
-2) darle el permiso poniendo la contraseña
+1) desde la terminal ir a la carpeta tp1
+2) source venv/bin/activate
+3) sudo docker compose run --rm --build monitor
+4) darle el permiso poniendo la contraseña
 
 8. **Decisiones sobre la TUI**
 rich: Se eligió por su facilidad para renderizar tablas complejas (Table), paneles (Panel) y textos formateados (Text)
@@ -63,7 +65,7 @@ La verdad es que recien este año empece a usar linux y me costaba mucho adaptar
 
 Descubri tambien que la IA es una excelente herramienta para aprender a la vez que se resuelve un problema, tiene sus limitacion pero es una genialidad poder ver de forma secuencial un tema teorico y luego verlo plasmado en el codigo de tu TP, eso ayuda a entender cada parte del codigo de tu proyecto aunque no lo hayamos escrito y nos permite poder tomar decisiones de diseño a la vez que aprendemos.
 
-Algo que me sorprendio es lo mucho que se puede hacer con pocas librerias, la libreria OS tiene un monton de herramientas muy utiles, ahora entiendo porque por lo general cuando le pido a la IA generarme un codigo casi siempre la importa, tambien el saber que python tiene limitaciones al usar multiples hilos (no tiene paralelismo real) es algo muy importante a tener en cuenta cuando se realizan programas pesados que necesitan mucho procesador
+Algo que me sorprendio es lo mucho que se puede hacer con pocas librerias, la libreria OS tiene un monton de herramientas muy utiles, ahora entiendo porque por lo general cuando le pido a la IA generarme un codigo casi siempre la importa, tambien el saber que python tiene limitaciones al usarsource venv/bin/activate multiples hilos (no tiene paralelismo real) es algo muy importante a tener en cuenta cuando se realizan programas pesados que necesitan mucho procesador
 
 Por ultimo este tp me dio una nocion nueva de las velocidades que maneja una computadora, todo este analisis de datos que hace nuestro codigo es posible porque extraemos datos de la ram, sin embargo si quisieramos hacer esto con el disco duro seria bastante mas complicado debido a que su tiempo de demora es muchismo mayor, cada parte del hardware tiene sus propial leyes y esta muy bueno saber eso
 
