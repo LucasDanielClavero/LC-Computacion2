@@ -1,9 +1,10 @@
+import time
 from procfs import (
     leer_status_proceso,
     leer_scheduling_stat
 )
 
-def correr_analizador_scheduling(cola_pids, snapshot, lock):
+def correr_analizador_scheduling(cola_pids, snapshot, lock, intervalo_val):
     """
     Proceso analizador de Planificación (Scheduling).
     Cumple con los requisitos obligatorios de la consigna.
@@ -13,6 +14,11 @@ def correr_analizador_scheduling(cola_pids, snapshot, lock):
     while True:
         # 1. Recibimos la lista de PIDs del Recolector
         pids = cola_pids.get()
+        while not cola_pids.empty():
+            try:
+                pids = cola_pids.get_nowait()
+            except:
+                break
         
         datos_sched = {}
         
@@ -49,3 +55,5 @@ def correr_analizador_scheduling(cola_pids, snapshot, lock):
         # 3. Guardamos en el snapshot compartido de forma segura
         with lock:
             snapshot["scheduling"] = datos_sched
+            
+        time.sleep(intervalo_val.value)

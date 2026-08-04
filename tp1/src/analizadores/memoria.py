@@ -1,3 +1,4 @@
+import time
 from procfs import (
     leer_status_proceso, 
     leer_memoria_status, 
@@ -6,7 +7,7 @@ from procfs import (
     agrupar_segmentos_memoria   # Importar nueva función
 )
 
-def correr_analizador_memoria(cola_pids, snapshot, lock):
+def correr_analizador_memoria(cola_pids, snapshot, lock, intervalo_val):
     """
     Proceso analizador de la vista Memoria.
     Recibe PIDs y extrae las métricas Vm*, faults, y regiones mapeadas (maps) agrupadas.
@@ -15,6 +16,11 @@ def correr_analizador_memoria(cola_pids, snapshot, lock):
     
     while True:
         pids = cola_pids.get()
+        while not cola_pids.empty():
+            try:
+                pids = cola_pids.get_nowait()
+            except:
+                break
         datos_memoria = {}
         
         for pid in pids:
@@ -45,3 +51,5 @@ def correr_analizador_memoria(cola_pids, snapshot, lock):
             
         with lock:
             snapshot["memoria"] = datos_memoria
+            
+        time.sleep(intervalo_val.value)

@@ -1,6 +1,7 @@
-from procfs import leer_status_proceso, decodificar_mascara_senales
+import time
+from procfs import leer_status_proceso, decodificar_mascara_senales, nombres_desde_mascara
 
-def correr_analizador_senales(cola_pids, snapshot, lock):
+def correr_analizador_senales(cola_pids, snapshot, lock, intervalo_val):
     """
     Proceso analizador de Señales de los procesos (/proc/<pid>/status).
     """
@@ -9,6 +10,11 @@ def correr_analizador_senales(cola_pids, snapshot, lock):
     while True:
         # 1. Recibimos la lista de PIDs del Recolector
         pids = cola_pids.get()
+        while not cola_pids.empty():
+            try:
+                pids = cola_pids.get_nowait()
+            except:
+                break
         
         datos_senales = {}
         
@@ -37,10 +43,16 @@ def correr_analizador_senales(cola_pids, snapshot, lock):
                     "pending_num": decodificar_mascara_senales(sig_pnd_hex),
                     "blocked_num": decodificar_mascara_senales(sig_blk_hex),
                     "ignored_num": decodificar_mascara_senales(sig_ign_hex),
-                    "caught_num": decodificar_mascara_senales(sig_cgt_hex)
+                    "caught_num": decodificar_mascara_senales(sig_cgt_hex),
+                    "pending_nom": nombres_desde_mascara(sig_pnd_hex),
+                    "blocked_nom": nombres_desde_mascara(sig_blk_hex),
+                    "ignored_nom": nombres_desde_mascara(sig_ign_hex),
+                    "caught_nom": nombres_desde_mascara(sig_cgt_hex)
                 }
             }
             
         # 3. Guardamos en el snapshot compartido de forma segura
         with lock:
             snapshot["senales"] = datos_senales
+            
+        time.sleep(intervalo_val.value)

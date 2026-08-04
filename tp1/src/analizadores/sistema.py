@@ -4,7 +4,7 @@ from procfs import (
     leer_stat_proceso, leer_status_proceso
 )
 
-def correr_analizador_sistema(cola_pids, snapshot, lock):
+def correr_analizador_sistema(cola_pids, snapshot, lock, intervalo_val):
     """
     Proceso analizador del Sistema Global.
     Cumple con los requisitos obligatorios de contar estados, threads y top 3.
@@ -16,6 +16,11 @@ def correr_analizador_sistema(cola_pids, snapshot, lock):
     while True:
         # 1. Ahora sí usamos la lista de PIDs
         pids = cola_pids.get()
+        while not cola_pids.empty():
+            try:
+                pids = cola_pids.get_nowait()
+            except:
+                break
         
         stat = leer_stat_global()
         load = leer_loadavg()
@@ -94,3 +99,5 @@ def correr_analizador_sistema(cola_pids, snapshot, lock):
         
         with lock:
             snapshot["sistema"] = datos_sistema
+            
+        time.sleep(intervalo_val.value)

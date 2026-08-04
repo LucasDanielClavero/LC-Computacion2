@@ -85,23 +85,6 @@ def leer_stat_proceso(pid):
     except (FileNotFoundError, ProcessLookupError, PermissionError, IndexError, ValueError):
         return None
 
-def leer_memoria_status(status):
-    """
-    Extrae las métricas de memoria desde el diccionario de /proc/<pid>/status.
-    Devuelve un diccionario con VmSize, VmRSS, VmData, VmStk, VmExe, VmLib.
-    """
-    if not status:
-        return None
-        
-    return {
-        "vmsize": status.get('VmSize', '0 kB'),
-        "vmrss": status.get('VmRSS', '0 kB'),
-        "vmdata": status.get('VmData', '0 kB'),
-        "vmstk": status.get('VmStk', '0 kB'),
-        "vmexe": status.get('VmExe', '0 kB'),
-        "vmlib": status.get('VmLib', '0 kB')
-    }
-
 def leer_maps_proceso(pid):
     """
     Lee /proc/<pid>/maps y devuelve una lista de diccionarios
@@ -172,6 +155,21 @@ def leer_io_proceso(pid):
         pass
     return datos_io
 
+def inferir_tipo_fd(destino):
+    """Infiere el tipo de FD a partir del destino del symlink."""
+    if destino.startswith('/dev/pts/') or destino.startswith('/dev/tty'):
+        return "tty"
+    elif destino.startswith('socket:'):
+        return "socket"
+    elif destino.startswith('pipe:'):
+        return "pipe"
+    elif destino.startswith('anon_inode:'):
+        return "anon_inode"
+    elif destino.startswith('/'):
+        return "file"
+    else:
+        return "other"
+
 def leer_fds_proceso(pid):
     """
     Lista el directorio /proc/<pid>/fd y resuelve los links simbólicos
@@ -207,6 +205,7 @@ def leer_fds_proceso(pid):
             descriptores.append({
                 "fd": fd_nombre,
                 "destino": destino,
+                "tipo": inferir_tipo_fd(destino),
                 "pos": pos,
                 "flags": flags
             })
@@ -308,6 +307,22 @@ def leer_hilos_task(pid):
         return []
         
     return hilos
+
+NOMBRES_SENALES = {
+    1: "SIGHUP", 2: "SIGINT", 3: "SIGQUIT", 4: "SIGILL",
+    5: "SIGTRAP", 6: "SIGABRT", 7: "SIGBUS", 8: "SIGFPE",
+    9: "SIGKILL", 10: "SIGUSR1", 11: "SIGSEGV", 12: "SIGUSR2",
+    13: "SIGPIPE", 14: "SIGALRM", 15: "SIGTERM", 17: "SIGCHLD",
+    18: "SIGCONT", 19: "SIGSTOP", 20: "SIGTSTP", 21: "SIGTTIN",
+    22: "SIGTTOU", 23: "SIGURG", 24: "SIGXCPU", 25: "SIGXFSZ",
+    26: "SIGVTALRM", 27: "SIGPROF", 28: "SIGWINCH", 29: "SIGIO",
+    30: "SIGPWR", 31: "SIGSYS",
+}
+
+def nombres_desde_mascara(hex_str):
+    """Convierte máscara hex a lista de nombres de señales."""
+    numeros = decodificar_mascara_senales(hex_str)
+    return [NOMBRES_SENALES.get(n, f"SIG{n}") for n in numeros]
 
 def decodificar_mascara_senales(hex_str):
     """

@@ -47,7 +47,8 @@ def extraer_ejemplo_fd(info):
         if isinstance(elem, dict):
             fd_num = elem.get("fd", "?")
             dest = elem.get("destino") or elem.get("target") or elem.get("path") or "desconocido"
-            return f"FD {fd_num} -> {dest}"
+            tipo = elem.get("tipo", "unknown")
+            return f"FD {fd_num} [{tipo}] -> {dest}"
         else:
             return f"FD {elem}"
             
@@ -189,8 +190,8 @@ def construir_tabla(vista, snapshot_completo, indice_sel, pid_pinned, filtro_cmd
         table.add_column("Cant. Hilos", justify="right")
         table.add_column("Detalle LWP (TID, Est, CPU%)", style="dim white")
     elif vista in ["5", "s"]:
-        table.add_column("Ignoradas (Hex)", style="yellow")
-        table.add_column("Capturadas (Hex)", style="green")
+        table.add_column("Ignoradas (Nombres)", style="yellow")
+        table.add_column("Capturadas (Nombres)", style="green")
     elif vista in ["6", "p"]:
         table.add_column("Prio/Nice/RT", justify="center")
         table.add_column("Policy", style="magenta", justify="center")
@@ -238,9 +239,11 @@ def construir_tabla(vista, snapshot_completo, indice_sel, pid_pinned, filtro_cmd
             table.add_row(prefix, pid, str(cant_hilos), str(ejemplo)[:60], style=estilo_fila)
 
         elif vista in ["5", "s"]:
-            hex_ign = info.get("hex", {}).get("ignored") or info.get("sig_ign") or "0000000000000000"
-            hex_cgt = info.get("hex", {}).get("caught") or info.get("sig_cgt") or "0000000000000000"
-            table.add_row(prefix, pid, str(hex_ign)[:16], str(hex_cgt)[:16], style=estilo_fila)
+            ign_nom = info.get("decodificado", {}).get("ignored_nom", [])
+            cgt_nom = info.get("decodificado", {}).get("caught_nom", [])
+            ign_str = ",".join(ign_nom) if ign_nom else "Ninguna"
+            cgt_str = ",".join(cgt_nom) if cgt_nom else "Ninguna"
+            table.add_row(prefix, pid, ign_str[:30], cgt_str[:30], style=estilo_fila)
 
         elif vista in ["6", "p"]:
             # Obtenemos los nuevos datos que mandamos desde el analizador
@@ -271,7 +274,7 @@ def construir_tabla(vista, snapshot_completo, indice_sel, pid_pinned, filtro_cmd
     return table, items, len(items)
 
 
-def desplegar_tui(snapshot, lock):
+def desplegar_tui(snapshot, lock, intervalos):
     vista_actual = "1"
     indice_sel = 0
     pid_pinned = None
@@ -279,8 +282,12 @@ def desplegar_tui(snapshot, lock):
     filtro_user = ""
     ordenes = ["PID", "CPU", "RSS"]
     idx_orden = 0
-    intervalo_refresco = 1.0
     mostrar_ayuda = False
+
+    mapa_claves_tui = {
+        "1": "resumen", "2": "memoria", "3": "fds", 
+        "4": "threads", "5": "senales", "6": "scheduling", "7": "sistema"
+    }
 
     teclas_vistas = {
         '1': '1', 'r': '1',
@@ -298,6 +305,9 @@ def desplegar_tui(snapshot, lock):
             senales.procesar_flags_senales(snapshot)
             if senales.FLAG_SHUTDOWN:
                 break
+
+            clave_snap = mapa_claves_tui.get(vista_actual, "resumen")
+            intervalo_refresco = intervalos[clave_snap].value
 
             with lock:
                 snapshot_copy = dict(snapshot)
@@ -367,9 +377,11 @@ def desplegar_tui(snapshot, lock):
             elif char == 'c':
                 idx_orden = (idx_orden + 1) % len(ordenes)
             elif char in ['+', '=']:
-                intervalo_refresco = max(0.2, intervalo_refresco - 0.2)
+                clave_snap = mapa_claves_tui.get(vista_actual, "resumen")
+                intervalos[clave_snap].value = max(0.5, intervalos[clave_snap].value - 0.2)
             elif char in ['-', '_']:
-                intervalo_refresco = min(5.0, intervalo_refresco - 0.2)
+                clave_snap = mapa_claves_tui.get(vista_actual, "resumen")
+                intervalos[clave_snap].value = min(15.0, intervalos[clave_snap].value + 0.2)
             elif char == '/':
                 with term.cooked():
                     console.print("\n[bold yellow]Filtro comando (Enter para aplicar / vacío borra):[/bold yellow]")

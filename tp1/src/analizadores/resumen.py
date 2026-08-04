@@ -7,7 +7,7 @@ from procfs import (
     TICKS_POR_SEGUNDO
 )
 
-def correr_analizador_resumen(cola_pids, snapshot, lock, intervalo=2.0):
+def correr_analizador_resumen(cola_pids, snapshot, lock, intervalo_val):
     """
     Proceso analizador de la vista Resumen.
     Mantiene un historial en memoria local de los ticks de CPU para calcular el % de uso.
@@ -20,6 +20,11 @@ def correr_analizador_resumen(cola_pids, snapshot, lock, intervalo=2.0):
     while True:
         # 1. Recibimos la lista de PIDs enviada por el Recolector
         pids = cola_pids.get()
+        while not cola_pids.empty():
+            try:
+                pids = cola_pids.get_nowait()
+            except:
+                break
         tiempo_actual = time.time()
         
         datos_resumen = {}
@@ -74,3 +79,5 @@ def correr_analizador_resumen(cola_pids, snapshot, lock, intervalo=2.0):
         # 3. Guardamos en el Snapshot Global (memoria compartida)
         with lock:
             snapshot["resumen"] = datos_resumen
+            
+        time.sleep(intervalo_val.value)

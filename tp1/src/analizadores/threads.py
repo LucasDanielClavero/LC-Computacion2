@@ -2,7 +2,7 @@ import os
 import time
 from procfs import TICKS_POR_SEGUNDO, leer_detalles_hilo
 
-def correr_analizador_threads(cola_pids, snapshot, lock):
+def correr_analizador_threads(cola_pids, snapshot, lock, intervalo_val):
     """
     Proceso analizador de la vista Threads (LWP).
     Calcula el uso de CPU individual por hilo.
@@ -14,6 +14,11 @@ def correr_analizador_threads(cola_pids, snapshot, lock):
     
     while True:
         pids = cola_pids.get()
+        while not cola_pids.empty():
+            try:
+                pids = cola_pids.get_nowait()
+            except:
+                break
         tiempo_actual = time.time()
         
         datos_threads = {}
@@ -61,3 +66,5 @@ def correr_analizador_threads(cola_pids, snapshot, lock):
             
         with lock:
             snapshot["threads"] = datos_threads
+            
+        time.sleep(intervalo_val.value)

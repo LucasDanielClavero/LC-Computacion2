@@ -1,5 +1,5 @@
 import sys
-from multiprocessing import Process, Manager, Queue, Lock
+from multiprocessing import Process, Manager, Queue, Lock, Value
 import senales
 
 # --- IMPORTAMOS LOS 7 ANALIZADORES OBLIGATORIOS ---
@@ -42,14 +42,25 @@ def main():
     p_recolector = Process(target=correr_recolector, args=(colas,))
     procesos.append(p_recolector)
 
+    # Intervalos independientes por analizador
+    intervalos = {
+        "resumen": Value('d', 2.0),
+        "memoria": Value('d', 3.0),
+        "fds": Value('d', 5.0),
+        "threads": Value('d', 2.0),
+        "senales": Value('d', 10.0),
+        "scheduling": Value('d', 10.0),
+        "sistema": Value('d', 2.0)
+    }
+
     # Procesos Analizadores (Los 7 obligatorios de la consigna)
-    procesos.append(Process(target=correr_analizador_resumen, args=(colas["resumen"], snapshot_global, lock_snapshot)))
-    procesos.append(Process(target=correr_analizador_memoria, args=(colas["memoria"], snapshot_global, lock_snapshot)))
-    procesos.append(Process(target=correr_analizador_fds, args=(colas["fds"], snapshot_global, lock_snapshot)))
-    procesos.append(Process(target=correr_analizador_threads, args=(colas["threads"], snapshot_global, lock_snapshot)))
-    procesos.append(Process(target=correr_analizador_senales, args=(colas["senales"], snapshot_global, lock_snapshot)))
-    procesos.append(Process(target=correr_analizador_scheduling, args=(colas["scheduling"], snapshot_global, lock_snapshot)))
-    procesos.append(Process(target=correr_analizador_sistema, args=(colas["sistema"], snapshot_global, lock_snapshot)))
+    procesos.append(Process(target=correr_analizador_resumen, args=(colas["resumen"], snapshot_global, lock_snapshot, intervalos["resumen"])))
+    procesos.append(Process(target=correr_analizador_memoria, args=(colas["memoria"], snapshot_global, lock_snapshot, intervalos["memoria"])))
+    procesos.append(Process(target=correr_analizador_fds, args=(colas["fds"], snapshot_global, lock_snapshot, intervalos["fds"])))
+    procesos.append(Process(target=correr_analizador_threads, args=(colas["threads"], snapshot_global, lock_snapshot, intervalos["threads"])))
+    procesos.append(Process(target=correr_analizador_senales, args=(colas["senales"], snapshot_global, lock_snapshot, intervalos["senales"])))
+    procesos.append(Process(target=correr_analizador_scheduling, args=(colas["scheduling"], snapshot_global, lock_snapshot, intervalos["scheduling"])))
+    procesos.append(Process(target=correr_analizador_sistema, args=(colas["sistema"], snapshot_global, lock_snapshot, intervalos["sistema"])))
 
     # 5. Iniciamos todos los procesos en paralelo
     print("[Main] Iniciando procesos (Recolector + 7 Analizadores)...")
@@ -58,7 +69,7 @@ def main():
 
     # 6. Lanzamos la TUI en el hilo principal
     try:
-        desplegar_tui(snapshot_global, lock_snapshot)
+        desplegar_tui(snapshot_global, lock_snapshot, intervalos)
     except KeyboardInterrupt:
         pass
     finally:

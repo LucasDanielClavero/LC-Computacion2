@@ -1,10 +1,11 @@
+import time
 from procfs import (
     leer_fds_proceso, 
     leer_limite_fds, 
     leer_io_proceso
 )
 
-def correr_analizador_fds(cola_pids, snapshot, lock):
+def correr_analizador_fds(cola_pids, snapshot, lock, intervalo_val):
     """
     Proceso analizador de Descriptores de Archivos e I/O.
     """
@@ -13,6 +14,11 @@ def correr_analizador_fds(cola_pids, snapshot, lock):
     while True:
         # 1. Recibimos la lista de PIDs del Recolector
         pids = cola_pids.get()
+        while not cola_pids.empty():
+            try:
+                pids = cola_pids.get_nowait()
+            except:
+                break
         
         datos_fds = {}
         
@@ -33,3 +39,5 @@ def correr_analizador_fds(cola_pids, snapshot, lock):
         # 3. Guardamos en la memoria compartida
         with lock:
             snapshot["fds"] = datos_fds
+            
+        time.sleep(intervalo_val.value)
