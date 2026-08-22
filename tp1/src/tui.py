@@ -1,6 +1,8 @@
 import os
+import sys
 import time
 import re
+import select
 import senales
 from blessed import Terminal
 from rich.console import Console
@@ -146,7 +148,7 @@ def construir_tabla(vista, snapshot_completo, indice_sel, pid_pinned, filtro_cmd
     elif orden_col == "CPU":
         def obtener_cpu(item):
             _, inf, inf_res = item
-            val = inf.get("run_time_ms") or inf_res.get("run_time_ms") or inf.get("cpu_ms") or 0
+            val = inf_res.get("cpu_porcentaje", inf.get("cpu_porcentaje", 0.0))
             try:
                 return float(val)
             except (ValueError, TypeError):
@@ -178,6 +180,8 @@ def construir_tabla(vista, snapshot_completo, indice_sel, pid_pinned, filtro_cmd
     if vista in ["1", "r"]:
         table.add_column("Usuario", style="magenta")
         table.add_column("Estado", style="bold yellow")
+        table.add_column("CPU%", justify="right", style="bold cyan")
+        table.add_column("Thr", justify="right")
         table.add_column("Comando", style="white")
     elif vista in ["2", "m"]:
         table.add_column("VmSize (MB)", justify="right")
@@ -215,7 +219,9 @@ def construir_tabla(vista, snapshot_completo, indice_sel, pid_pinned, filtro_cmd
             cmd = info.get("cmdline") or info.get("name") or "[Kernel Thread]"
             usr = info.get("user") or info.get("usuario") or "root"
             est = info.get("state") or info.get("estado") or info.get("status") or "R"
-            table.add_row(prefix, pid, str(usr), str(est), str(cmd)[:55], style=estilo_fila)
+            cpu = info.get("cpu_porcentaje", 0.0)
+            thr = info.get("threads", 0)
+            table.add_row(prefix, pid, str(usr), str(est), f"{cpu:.1f}", str(thr), str(cmd)[:55], style=estilo_fila)
 
         elif vista in ["2", "m"]:
             vmsize = parsear_kb_a_mb(info.get("vmsize"))
@@ -347,7 +353,19 @@ def desplegar_tui(snapshot, lock, intervalos):
                 console.print(Panel(Text(header_str, style="cyan"), title="MONITOR PROC - TUI", border_style="bright_blue"))
                 console.print(tabla)
 
-            val = term.inkey(timeout=intervalo_refresco)
+            r, _, _ = select.select([sys.stdin, senales.pipe_r], [], [], intervalo_refresco)
+            
+            if senales.pipe_r in r:
+                try:
+                    os.read(senales.pipe_r, 1024)
+                except (BlockingIOError, OSError):
+                    pass
+                continue
+                
+            if sys.stdin in r:
+                val = term.inkey(timeout=0)
+            else:
+                continue
 
             if not val:
                 continue

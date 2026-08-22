@@ -67,8 +67,7 @@ def correr_analizador_sistema(cola_pids, snapshot, lock, intervalo_val):
         # Top 3 CPU (basado en ms de uso si lo tenés en tu analizador resumen)
         lista_cpu = []
         for p, inf in resumen_snap.items():
-            # Adaptá esta clave según lo que devuelva tu analizador_resumen
-            val_cpu = inf.get("cpu_ms", inf.get("run_time_ms", 0)) 
+            val_cpu = inf.get("cpu_porcentaje", 0.0) 
             lista_cpu.append((p, val_cpu, inf.get("cmdline", str(p))))
         top_cpu = sorted(lista_cpu, key=lambda x: x[1], reverse=True)[:3]
 

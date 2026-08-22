@@ -9,25 +9,40 @@ FLAG_RELOAD = False
 FLAG_DUMP = False
 FLAG_VERBOSE = False
 
+# Self-pipe para notificar a la TUI
+pipe_r, pipe_w = os.pipe()
+os.set_blocking(pipe_r, False)
+os.set_blocking(pipe_w, False)
+
+def notificar_pipe():
+    try:
+        os.write(pipe_w, b'x')
+    except (BlockingIOError, OSError):
+        pass
+
 def manejador_shutdown(sig, frame):
     """Maneja SIGINT y SIGTERM para apagar el programa."""
     global FLAG_SHUTDOWN
     FLAG_SHUTDOWN = True
+    notificar_pipe()
 
 def manejador_reload(sig, frame):
     """Maneja SIGHUP para recargar la configuración."""
     global FLAG_RELOAD
     FLAG_RELOAD = True
+    notificar_pipe()
 
 def manejador_dump(sig, frame):
     """Maneja SIGUSR1 para hacer dump del snapshot."""
     global FLAG_DUMP
     FLAG_DUMP = True
+    notificar_pipe()
 
 def manejador_verbose(sig, frame):
     """Maneja SIGUSR2 para alternar el modo verbose."""
     global FLAG_VERBOSE
     FLAG_VERBOSE = not FLAG_VERBOSE  # Hacemos un toggle (True -> False -> True)
+    notificar_pipe()
 
 def configurar_manejadores_senales():
     """Registra las señales en el sistema."""
