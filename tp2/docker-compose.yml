@@ -1,0 +1,13 @@
+services:
+  api:
+    build: .
+    container_name: tareas_tp2
+    ports:
+      - "8000:8000"   # la API queda accesible en localhost:8000 desde el host
+    volumes:
+      - ./volcados:/app/volcados   # los volcados de estado quedan en el host
+    environment:
+      - NUM_WORKERS=3
+      - NUM_PROCESOS=2
+      - TIMEOUT_DEFAULT=60
+      - LIMITE_APAGADO=10
