@@ -2,3 +2,10 @@ __pycache__/
 venv/
 volcados/
 estado_*.json
+
+# Doc de trabajo interno, NO se sube al repo
+CHECKLIST.md
+
+# Material de clases de la catedra, NO se sube al repo
+clases/
+Clases/

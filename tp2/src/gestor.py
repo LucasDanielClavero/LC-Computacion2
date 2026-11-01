@@ -24,9 +24,20 @@ NUM_WORKERS = int(os.environ.get("NUM_WORKERS", "3"))
 NUM_PROCESOS = int(os.environ.get("NUM_PROCESOS", "2"))
 TIMEOUT_DEFAULT = float(os.environ.get("TIMEOUT_DEFAULT", "60"))
 LIMITE_APAGADO = float(os.environ.get("LIMITE_APAGADO", "10"))
+COLA_MAXSIZE = int(os.environ.get("COLA_MAXSIZE", "100"))
 DIR_VOLCADOS = "volcados"
 
 ESTADOS_POSIBLES = ("pendiente", "ejecutando", "completada", "fallida", "cancelada")
+
+# Centinela de apagado (clase 21): object() crea un objeto unico, distinto de
+# cualquier dato que pueda llegar de afuera. Se compara con `is` (identidad),
+# no con `==`. La clase advierte que None o "FIN" son peligrosos: podrian ser
+# datos legitimos; con object() eso es imposible.
+PASTILLA = object()
+
+
+class ColaLlenaError(Exception):
+    """Se levanta cuando la cola alcanzo su maxsize (backpressure)."""
 
 
 class GestorTareas:
@@ -43,11 +54,23 @@ class GestorTareas:
     # -----------------------------------------------------------
     async def iniciar(self):
         os.makedirs(DIR_VOLCADOS, exist_ok=True)
-        self.cola = asyncio.Queue()
+        # maxsize = backpressure (clase 21): si la cola esta llena, la tarea
+        # no entra y la API responde 503 en vez de aceptar trabajo que no
+        # podriamos hacer. Sin limite, 10.000 tareas de golpe viven en memoria.
+        self.cola = asyncio.Queue(maxsize=COLA_MAXSIZE)
         # pool de PROCESOS para el trabajo pesado de CPU (hashear).
         # En Linux usa fork, en macOS/Windows usa spawn (por eso el
         # arranque de la app esta protegido con if __name__ == "__main__").
         self.pool_procesos = ProcessPoolExecutor(max_workers=NUM_PROCESOS)
+        # Caliento el pool: en 3.14 el default es forkserver y el primer uso
+        # lanza los procesos, lo que demora del orden de ~1s si pasa con la
+        # API ya atendiendo pedidos. Un mini-hash al arrancar deja los
+        # procesos listos. Es la idea de la clase 21/22: el pool se arma una
+        # vez al inicio y ya queda para toda la vida del servidor.
+        # (Nota: hay que ir por run_in_executor: un concurrent.futures.Future
+        # no es awaitable directo, solo el wrapper de asyncio lo es.)
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(self.pool_procesos, hashear_bloqueante, "", 1)
         for i in range(NUM_WORKERS):
             self.workers.append(asyncio.create_task(self._worker(i)))
         logging.info("Gestor listo: %d workers, %d procesos para CPU-bound",
@@ -59,6 +82,16 @@ class GestorTareas:
     # -----------------------------------------------------------
     def encolar(self, tipo, params, timeout_s=None):
         self._validar_params(tipo, params)
+
+        # Chequeo de la cola ANTES de crear nada. No hay await aca en el
+        # medio, asi que la seccion critica es atomica por construccion:
+        # en corrutinas el cambio de contexto solo ocurre en un await
+        # (clase 20). Con await adentro habria que usar asyncio.Lock.
+        if self.cola.qsize() >= COLA_MAXSIZE:
+            raise ColaLlenaError(
+                "cola llena: hay %d tareas pendientes disponibles y el max es "
+                "de %d. Reintente mas tarde" % (self.cola.qsize(), COLA_MAXSIZE)
+            )
 
         id_tarea = f"t{next(self._contador)}"
         tarea = {
@@ -89,6 +122,8 @@ class GestorTareas:
                 raise ValueError("'hashear' necesita {'texto': str, 'iteraciones': int}")
             if not isinstance(params.get("iteraciones"), int) or params["iteraciones"] < 1:
                 raise ValueError("'iteraciones' tiene que ser un entero >= 1")
+            if not isinstance(params.get("en_event_loop", False), bool):
+                raise ValueError("'en_event_loop' es opcional y tiene que ser booleano")
         elif tipo == "esperar":
             if not isinstance(params.get("segundos"), (int, float)) or params["segundos"] < 0:
                 raise ValueError("'esperar' necesita {'segundos': numero >= 0}")
@@ -104,7 +139,7 @@ class GestorTareas:
         while True:
             id_tarea = await self.cola.get()   # se queda esperando aqui
             try:
-                if id_tarea is None:
+                if id_tarea is PASTILLA:
                     break  # pastilla de apagado: termine mi vida
 
                 tarea = self.registro[id_tarea]
@@ -161,6 +196,17 @@ class GestorTareas:
             return await ejecutar_descargar(tarea["params"])
 
         if tipo == "hashear":
+            if tarea["params"].get("en_event_loop"):
+                # BUG INTENCIONAL, solo para mediciones (ver mediciones.py y
+                # el README). Ejecutar CPU directo en una corrutina congela
+                # el event loop entero: aca pasa exactamente eso, y el punto
+                # de la medicion M2 es comparar contra el executor.
+                # En uso normal NO pasar "en_event_loop": hashear va al pool.
+                # Respeto la liquidazon: funcion pura al nivel del modulo,
+                # porque ejecutarse directo o en un proceso la invoca igual.
+                return hashear_bloqueante(
+                    tarea["params"]["texto"], tarea["params"]["iteraciones"]
+                )
             # CPU-bound: NO lo hacemos en el event loop. run_in_executor
             # manda el trabajo a un proceso aparte y nos da un await
             # que no congela la API mientras tanto.
@@ -215,10 +261,13 @@ class GestorTareas:
             if t["estado"] == "completada" and t["empezo"] and t["termino"]:
                 tiempos_completadas.append(t["termino"] - t["empezo"])
 
+        promedio = None
+        if tiempos_completadas:
+            promedio = round(sum(tiempos_completadas) / len(tiempos_completadas), 3)
         return {
             "totales_por_estado": totales,
             "tareas_totales": len(self.registro),
-            "tiempo_promedio_ejecucion_s": round(sum(tiempos_completadas) / len(tiempos_completadas), 3) if tiempos_completadas else None,
+            "tiempo_promedio_ejecucion_s": promedio,
             "workers_ocupados": len(self.en_curso),
             "workers_totales": NUM_WORKERS,
         }
@@ -234,14 +283,17 @@ class GestorTareas:
         logging.info("Apagando: esparzo %d pastillas en la cola...", len(self.workers))
 
         for _ in self.workers:
-            await self.cola.put(None)
+            await self.cola.put(PASTILLA)
 
         # Espero con limite a que los workers terminen lo que corren
         try:
             await asyncio.wait_for(asyncio.gather(*self.workers), timeout=LIMITE_APAGADO)
             logging.info("Todos los workers terminaron ordenadamente")
         except asyncio.TimeoutError:
-            logging.warning("Los workers no terminaron en %.0fs: cancelo las tareas en curso", LIMITE_APAGADO)
+            logging.warning(
+                "Los workers no terminaron en %.0fs: cancelo las tareas en curso",
+                LIMITE_APAGADO,
+            )
             for id_tarea, futura in list(self.en_curso.items()):
                 self.registro[id_tarea]["estado"] = "cancelada"
                 futura.cancel()

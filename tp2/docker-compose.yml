@@ -11,3 +11,4 @@ services:
       - NUM_PROCESOS=2
       - TIMEOUT_DEFAULT=60
       - LIMITE_APAGADO=10
+      - COLA_MAXSIZE=100

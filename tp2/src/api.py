@@ -13,7 +13,7 @@ from typing import Optional
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
 
-from gestor import ESTADOS_POSIBLES, GestorTareas, TIPOS_VALIDOS
+from gestor import ColaLlenaError, ESTADOS_POSIBLES, GestorTareas, TIPOS_VALIDOS
 
 logging.basicConfig(
     level=logging.INFO,
@@ -64,6 +64,10 @@ async def crear_tarea(peticion: PeticionTarea):
         )
     try:
         tarea = app.state.gestor.encolar(peticion.tipo, peticion.params, peticion.timeout_s)
+    except ColaLlenaError as e:
+        # Backpressure (clase 21): la cola alcanzo su maxsize. Rechazamos con
+        # 503 Service Unavailable en vez de aceptar trabajo que no podemos hacer.
+        raise HTTPException(status_code=503, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     # Respondo ya: id + estado inicial. La tarea todavia no empezo.
