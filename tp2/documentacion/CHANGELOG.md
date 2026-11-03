@@ -4,6 +4,26 @@ Historial de versiones del TP2. Cada entry corresponde (aproximadamente) a un co
 
 ---
 
+## v1.0 — 03/11/2026
+
+### Cambios
+
+- README completo con los 7 puntos del informe:
+  - §2: diagrama de arquitectura (componentes y flujo de una tarea).
+  - §3: las 4 decisiones de diseño de la consigna, argumentadas.
+  - §4: las tres mediciones con números, reflexión sencilla y la ficha
+    real de la máquina (Linux Mint 22.3, 12 núcleos; server en contenedor
+    `python:3.11-slim` sin límites de CPU).
+  - §5: conceptos del curso aplicados, clase por clase (17 a 22).
+  - §6: limitaciones conocidas (las 4 principales).
+  - §7: "lo que aprendiste" (sección personal).
+
+### Pendiente
+
+- Lectura final personal del informe completo antes de la entrega (03/11).
+
+---
+
 ## v0.4 — 02/11/2026
 
 ### Cambios

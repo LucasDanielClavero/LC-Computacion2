@@ -271,7 +271,124 @@ grupo entero en terminar:
 | 48 | 15.69 s | 16.00 s | 14.685 s |
 | 96 | 31.46 s | 32.00 s | 30.397 s |
 
-Reflexión: el tiempo total se comporta exacto como el techo de 3 workers
-dando que seria mas o menos 3 tareas por segundo, sin
-importar cuánto suba la cola. Lo único que crece es la espera del último en
-llegar 
+Reflexión: el tiempo total se comporta tal cual el techo de 3 workers,
+dando que seria mas o menos 3 tareas por segundo, sin importar cuánto suba
+la cola. Lo único que crece es la espera del último en llegar (con N=96,
+~30 s): la cola no acelera nada, solo absorbe los picos — y cuando la cola
+se llena (100, `COLA_MAXSIZE`), el POST responde 503.
+
+---
+
+## 5) Conceptos del curso aplicados
+
+Voy por orden, de la clase 17 a la 22:
+
+### Clase 17 — I/O multiplexing
+
+El event loop que vive dentro de uvicorn: espera muchos sockets a la vez, y
+eso es lo que permite que un solo hilo atienda todos los pedidos sin
+bloquearse. Toda mi API corre encima de eso.
+
+### Clase 18 — De `yield` a asyncio
+
+Las corrutinas y los `await`. Cada `await` pausa la función que lo ejecuta y
+le devuelve el control al loop, que pasa a otra cosa. Es la mecánica que usa
+todo el sistema: los endpoints atienden pedidos sin pisar a los workers, y
+`esperar` simplemente hace `await asyncio.sleep()` — espera sin consumir
+CPU mientras tanto.
+
+### Clase 19 — HTTP + FastAPI
+
+La API entera: los 5 endpoints con sus modelos de entrada validados
+(Pydantic), uvicorn como servidor, y la página `/docs` que FastAPI genera
+solo de leer las anotaciones. Todos los endpoints son `async`, así que se
+quedan adentro del loop y no agregan threads extra.
+
+### Clase 20 — Asyncio en red
+
+Con esta clase hago casi todo lo de red y de cancelación:
+
+- `descargar` usa `gather` + `ClientSession`: todas las URLs al mismo
+  tiempo, con timeout por URL y la sesión de conexiones compartida.
+- Todo tiene timeout: cada tarea corre envuelta en `wait_for(timeout)`, así
+  que ninguna puede colgar el servidor para siempre.
+- La cancelación: el `DELETE` corta la sub-tarea con `Task.cancel()`, que
+  entra en el próximo `await`, y la tarea queda `cancelada`. Al cerrarse, la
+  `ClientSession` se libera sola por el `async with`, aunque la corrutina
+  salga cancelada — la limpieza sale sola, sin código especial.
+- No instalo signal handlers propios: uvicorn ya corta los pedidos nuevos al
+  recibir la señal, y después corre mi apagado (mismo resultado, sin
+  duplicar el trabajo).
+
+### Clase 21 — Asyncio avanzado
+
+El corazón del TP:
+
+- La cola `asyncio.Queue` + 3 workers: el patrón productor-consumidor, con
+  `task_done()` en el `finally` para que el contador interno de la cola baje
+  siempre (sino `join()` espera eternamente).
+- Backpressure: la cola tiene `maxsize=100`; si llega a llenarse, el POST
+  responde 503 en vez de seguir tomando tareas.
+- El apagado ordenado: los workers son bucles infinitos, así que usan una
+  *pastilla* (un `object()` como centinela) para salir; al apagar se marcan
+  las pendientes como canceladas, se espera con límite a las en curso y si
+  el límite vence, se cancelan.
+
+### Clase 22 — concurrent.futures
+
+El `hashear` sale del event loop con `run_in_executor(ProcessPoolExecutor)`:
+el cálculo corre en otro proceso (los threads no dan paralelismo por el
+GIL) y el server sigue respondiendo. La función es top-level porque los
+pasajes entre procesos viajan serializados (pickle), y el pool se crea una
+sola vez al arrancar, no por pedido.
+
+---
+
+## 6) Limitaciones conocidas
+
+- **El estado no se recupera al arrancar.** Las tareas viven en memoria; al
+  apagar se escribe el volcado JSON con todos los estados, pero es
+  informativo (se reporta en el log, no se re-encola nada). Reponer el
+  estado pide decidir qué pasa con las que estaban ejecutando en el momento
+  del apagado, y sin base de datos esa pregunta no tiene respuesta clara.
+- **Un `DELETE` no interrumpe un `hashear` ya en marcha.** El corte funciona
+  inyectando la excepción en un `await`, y el cálculo que corre dentro del
+  proceso del executor no tiene ningún `await`. La tarea queda marcada como
+  a cancelar hasta que el hash termina; para cortarlo de verdad necesitaría
+  matar procesos a mano, con los riesgos de esa vía.
+- **Si un worker muere, su tarea queda trabada en `ejecutando`.** Solo pasa
+  si el bug está dentro del bucle del worker (no en la tarea): quién tenía
+  que marcarla era justamente él. El resto del pool sigue funcionando igual
+  — es el otro lado de que cada worker sea una corrutina independiente.
+- **Corre con un solo proceso de uvicorn.** Con `--workers N` serían N
+  procesos con N event loops distintos, y el registro de tareas en memoria
+  no se comparte entre procesos. Sin base de datos, el diseño coherente es
+  este.
+
+---
+
+## 7) Lo que aprendiste
+
+Lo que más me dejó este TP fueron las mediciones, porque me mostraron en
+números lo que la teoría decía. Me quedó claro que en paralelo demora menos
+que en serie (M1: 6.31× en las descargas), porque las esperas se enciman en
+vez de sumarse. También que el tiempo que tarda cada worker casi no cambia
+el tiempo de respuesta del server: los picos los absorbe la cola y lo único
+que crece es la espera del último en llegar. Y la regla fuerte: nada de
+cálculo pesado en el event loop — con el hash adentro el server quedaba
+congelado 3 segundos; con el executor, 7 milisegundos.
+
+El bug del que más me acuerdo es el del apagado: cerrábamos el server y, con
+la cola cargada, quedaban tareas pendientes que los workers seguían
+ejecutando antes de salir. Ahí aprendí que un bucle infinito necesita un
+modo de salir prolijo (la "pastilla" que se les manda a los workers) y que
+el apagado tiene que tener una espera con límite, si no puede estirarse sin
+fin.
+
+Si arrancara de cero, uso `run_in_executor` desde el primer día: no correría
+ningún cálculo en el loop "provisionalmente", ni para probar algo rápido,
+porque la trampa de bloquear el server cuesta carísimo y no se nota hasta
+que se mide. Y pondría los tests desde el principio, no al final: los sumé
+cuando el TP ya estaba casi listo, y fue la suite de tests la que encontró
+el bug del apagado — el problema estaba ahí hace semanas y lo destapó un
+test, no el uso manual.
