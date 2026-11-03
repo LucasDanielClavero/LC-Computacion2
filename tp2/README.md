@@ -45,7 +45,8 @@ Encima de eso agregamos la arquitectura del TP: cola + workers + executor.
 1. El `POST /tareas` valida el tipo y los params, y chequea que la cola no
    esté llena. Si lo está, responde **503** (backpressure, clase 21) en vez
    de aceptar trabajo que no va a poder hacer.
-2. Responde **inmediatamente** `{"id": "tN", "estado": "pendiente"}`: espera
+2. Responde **inmediatamente** `201 Created` con
+   `{"id": "tN", "estado": "pendiente"}`: espera
    cero a que la tarea termine.
 3. Un worker saca el id de la cola, marca la tarea como `ejecutando`, y la
    corre como **sub-tarea propia** (`asyncio.create_task`) envuelta en
@@ -82,6 +83,25 @@ los modelos Pydantic — clase 19).
 | `src/tareas.py` | Las 3 tareas `esperar`, `descargar`, `hashear` |
 | `src/main.py` | Entrada: `uvicorn.run` con la guarda `__main__` |
 | `scripts/mediciones.py` | Las 3 mediciones contra una instancia arriba |
+| `tests/test_api.py` | 11 pruebas automatizadas (pytest-asyncio), vía ASGI sin red |
+
+#### Pruebas automatizadas (bonus de la consigna)
+
+Además de los `curl` y `scripts/mediciones.py`, la suite con
+`pytest-asyncio` corre contra la app de verdad — mismo `lifespan`, mismo
+gestor, workers incluidos, sin tocar la red (via `httpx.ASGITransport`):
+
+```bash
+python -m pytest tests/ -v
+```
+
+Cubren: POST inmediato (201), ciclo completo con filtro y estadísticas,
+`hashear` por executor, validaciones (400) y 404, timeout → `fallida`,
+**cancelación en ejecución** (inmediata, y la API sigue viva), cancelación
+de `pendiente` que nunca arranca, 409 sobre terminadas, backpressure
+(cola llena → 503), excepción de tarea → `fallida` y el worker sigue vivo,
+y **apagado acotado con cola cargada** (el caso difícil del §2, que además
+encontró y corrigió el detalle fino del cancel al worker).
 
 ### Ejemplos de `curl`
 
@@ -113,10 +133,11 @@ curl "http://localhost:8000/tareas?estado=ejecutando"
 # estado y resultado de una tarea
 curl http://localhost:8000/tareas/t1
 
-# cancelar (igual sirve para pendiente que para en ejecución)
+# cancelar (igual sirve para pendiente que para en ejecucion; una tarea
+# ya terminada responde 409)
 curl -X DELETE http://localhost:8000/tareas/t1
 
-# estadisticas
+# estadisticas (incluye workers ocupados y tareas en cola)
 curl http://localhost:8000/estadisticas
 ```
 
@@ -219,12 +240,28 @@ esperarla con `wait_for`: recibiendo la cancelación, marca la tarea como
 `cancelada` y libera el slot del `en_curso`. La unidad cancelable es *la
 tarea*, no el worker: el worker sigue su bucle inmediatamente con la próxima.
 
-**Apagando el servidor:** dejo de aceptar pedidos (eso lo hace uvicorn con su
-propio handler de señales), esparzo una "pastilla" por worker — que la
-clase 21 llama centinela, y usamos `object()`, único e incomparable con datos
-de afuera — y espero con límite (`LIMITE_APAGADO`, 10 s). Si alguien no
-termina, se lo cancela; después se libera el pool de procesos y se volca el
-estado a JSON.
+**Apagando el servidor:** el orden es importante y lo hicimos así:
+
+1. `aceptando = False`: el gestor no entra trabajo nuevo (el `POST` responde
+   503). Es lo primero que hace `apagar()`.
+2. **Las pendientes no arrancan.** Se marcan `cancelada` (con motivo) y el
+   worker las saltea al sacarlas de la cola (ese salteo ya existía). Acá está
+   la razón más fina: la pastilla va al **final** de la cola (FIFO) — si las
+   pendientes no se marcaran, los workers las ejecutarían todas antes de
+   llegar a la pastilla y el apagado podría estirarse indefinidamente.
+3. Esperamos, con límite (`LIMITE_APAGADO`, 10 s), a que la cola se procese
+   con `cola.join()`: el contador interno de la cola incluye también las
+   tareas en curso (el worker hace su `task_done` al final), así que join()
+   exactamente espera "las que están en curso" — lo que pide la consigna.
+4. Si fuera del límite, se cancelan **solo las sub-tareas** (`en_curso`), con
+   `futura.cancel()`. Nunca al worker: el worker está preparado para atrapar
+   la `CancelledError` de su sub-tarea (es el mecanismo del DELETE) y si la
+   absorbiera también la suya, el cancel quedaría *sin efecto* — detectado y
+   corrido en los tests; el discriminador es `Task.cancelling()` (3.11+),
+   que cuenta los `cancel()` dirigidos a cada task.
+5. Con la cola vacía, una pastilla por worker con `put_nowait` — salen al
+   instante — se libera el pool de procesos (`shutdown(wait=False)`) y se
+   volca el estado a JSON.
 
 **¿Y los recursos a medio usar?** La limpieza no depende de *cómo* salió la
 corrutina, sino de los contextos con los que está armada: la
@@ -240,11 +277,9 @@ el executor.** El mecanismo de la clase 20 es inyectar la excepción en un
 `await` — pero el `hashear` corriendo dentro del proceso del pool no tiene
 ningún `await`: no hay punto donde inyectar. La misma regla que dice
 `concurrent.futures`: el `cancel()` solo funciona si la tarea no arrancó
-(clase 22).
-(clase 22). Consecuencia práctica: un DELETE sobre un `hashear` alcanzando
-`fallida` cuando el processo ya arrancó no interrompe al proceso; el estado
-queda "pendiente de cancelar" hasta que el proceso termine. Es una
-limitación aceptada (§5).
+(clase 22). Consecuencia práctica: un `DELETE` sobre un `hashear` en curso
+no interrumpe al proceso; el estado queda "pendiente de cancelar" hasta que
+el proceso termine. Es una limitación aceptada (§5).
 
 → La cancelación de `descargar` a mitad de una descarga real quedó probada
 con curl en la **sección 3, "Robustez"**.
@@ -376,21 +411,28 @@ después de lanzarla, `DELETE`. Resultado:
 - La API **sigue viva** durante y después (el `GET /estadisticas` = 200 en
   ~7 ms mientras se cancelaba la tarea).
 
-**2. Apagado ordenado con SIGINT (Ctrl+C), con una tarea de 60 s en curso:**
+**2. Apagado ordenado con SIGINT (Ctrl+C), con tareas de 30 s en curso y cola cargada:**
 
 1. uvicorn recibe la señal y para de aceptar pedidos (la primera pata del
    apagado ordenado, que la consigna pide).
-2. Nuestro `lifespan` apaga el gestor: esparce la pastilla en la cola
-   (una por worker); workers vacíos salen al instante.
-3. Espera con límite (`LIMITE_APAGADO` = 10 s) a los workers con tareas en
-   curso. La tarea de 60 s no alcanza: al vencer el límite se cancela
-   (`Task.cancel()`) y queda marcada `cancelada`.
-4. Se libera el pool de procesos y se volca el estado a
+2. Nuestro `lifespan` apaga el gestor: primero marca las pendientes como
+   `cancelada` (no arrancan) y configura `aceptando = False`.
+3. Espera con límite (`LIMITE_APAGADO` = 10 s) a las tareas en curso. Las
+   de 30 s no alcanzan: al vencer el límite se cancelan
+   (`Task.cancel()` sobre las sub-tareas) y quedan `cancelada`.
+4. Con la cola vacía, una pastilla por worker (salen al instante), libera el
+   pool de procesos y se volca el estado a
    `volcados/estado_<timestamp>.json`.
 
-**Verificado** que el volcado queda con los estados correctos y el proceso
-sale limpio (`Application shutdown complete`).
-Con SIGTERM el camino es el mismo (probado en la v0.1).
+**Verificado** en tres formas: SIGINT y SIGTERM sobre la API local, y
+`docker compose stop` contra el contenedor (que confirma también el
+`stop_grace_period`: Docker espera 20 s, más que los 10 s del límite, para no
+mandar `SIGKILL` en pleno volcado — el volcado queda escrito en el volumen
+del host). Además la suite de tests tiene uno específico para el caso
+difícil: cola cargada + límite vencido, y vérifica que el apagado vuelva
+acotado y que las pendientes quedaron `cancelada` "cancelada durante el
+apagado". Ese test descubrió el problema fino del punto 4 (cancelar al
+worker en vez de a la sub-tarea), ya corregido en el código y contado en §2.
 
 ---
 
@@ -410,6 +452,7 @@ La relación entre partes del sistema y clases del curso:
 | `gather`+`ClientSession` en `descargar` | I/O concurrente de red + reuso del cliente | 20 |
 | Timeout por URL y timeout por tarea | "Siempre timeout" en operaciones de red; timeout cancela | 20 |
 | `DELETE` → `Task.cancel()` → `CancelledError` | Cancelación: inyección de excepción en el próximo `await` | 20 |
+| Distinguir cancel del worker vs de la sub-tarea (`Task.cancelling()`) | Cancelar la unidad correcta (tarea, no worker) en el apagado | 20/21 |
 | Context managers y `finally` en `tareas.py` | Limpieza en cancelación | 20 |
 | `run_in_executor` + `ProcessPoolExecutor` | El cálculo sale del loop; GIL: procesos reales para CPU | 21/22 |
 | `hashear_bloqueante` top-level | Pickle: lambdas no se pueden mandar a procesos | 22 |
@@ -454,9 +497,14 @@ Dos decisiones que se apartan de las clases — del comportamiento deliberado:
   esperando era justamente él; en los casos normales (excepciones de tarea)
   está contemplado (§2).
 - **Sin reintentos ni prioridades** — son bonus opcionales de la consigna.
-- **Sin tests automatizados**: toda la verificación actual es manual con
-  `curl` + `scripts/mediciones.py` (tests con `pytest-asyncio` es un bonus
-  aún no incorporado).
+- **El historial de tareas crece sin límite.** Las terminadas nunca se borran
+  del registro: con muchísimas tareas activas en la vida del servidor, el
+  dict crece. Deliberado (la consigna no pide purga; borrar implicaría
+  decidir qué pasa con las estadísticas acumuladas).
+- **Una `pendiente` cancelada sigue ocupando su lugar en la cola** hasta que
+  un worker la saque y la saltee (la `asyncio.Queue` no permite borrar del
+  medio). Con `COLA_MAXSIZE=100`, esas tareas siguen contando para el
+  límite un ratito más.
 
 ---
 

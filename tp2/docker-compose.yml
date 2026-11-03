@@ -12,3 +12,8 @@ services:
       - TIMEOUT_DEFAULT=60
       - LIMITE_APAGADO=10
       - COLA_MAXSIZE=100
+    # Docker manda SIGKILL si el contenedor no cierra a tiempo (10 s por
+    # defecto). Tiene que ser MAYOR que LIMITE_APAGADO, o el SIGKILL llega
+    # antes de que termine el apagado ordenado y el volcado del estado.
+    stop_grace_period: 20s
+    restart: unless-stopped

@@ -48,6 +48,7 @@ class GestorTareas:
         self.en_curso = {}       # id -> asyncio.Task que esta ejecutando esa tarea
         self.pool_procesos = None  # ProcessPoolExecutor para las tareas CPU-bound
         self._contador = count(1)  # para generar ids: t1, t2, t3...
+        self.aceptando = True    # False mientras se apaga: el POST responde 503
 
     # -----------------------------------------------------------
     # Arranque: se llama al levantar la API
@@ -81,6 +82,9 @@ class GestorTareas:
     # Devuelve inmediatamente: no espera a que termine.
     # -----------------------------------------------------------
     def encolar(self, tipo, params, timeout_s=None):
+        if not self.aceptando:
+            # Estamos apagando: no entro trabajo nuevo (consigna 4).
+            raise RuntimeError("el servidor se esta apagando, no acepta tareas nuevas")
         self._validar_params(tipo, params)
 
         # Chequeo de la cola ANTES de crear nada. No hay await aca en el
@@ -169,8 +173,22 @@ class GestorTareas:
                     tarea["estado"] = "fallida"
                     tarea["error"] = "timeout: supero los %.1f segundos" % tarea["timeout_s"]
                 except asyncio.CancelledError:
-                    # Por el DELETE /tareas/{id}
-                    tarea["estado"] = "cancelada"
+                    # Dos origen posibles, y hay que distinguirlos:
+                    # 1) DELETE / apagado cancelo la SUB-TAREA (la unidad
+                    #    cancelable es la tarea): el worker ESTA vivo y
+                    #    debe solo marcar el estado y volver a su bucle.
+                    # 2) Me cancelan A MI (el worker): el wait_for re-cancela
+                    #    la sub-tarea tambien, con lo que mirar la sub-tarea
+                    #    no distingue nada: absorber la cancelacion seria un
+                    #    cancel sin efecto y el worker volveria al bucle sin
+                    #    FINALIZAR nunca (lo tuve que comprobar en los tests).
+                    # La discrimiacion oficial de 3.11+ es Task.cancelling():
+                    # cuenta los cancel() dirigidos a ESTA task especifica.
+                    if asyncio.current_task().cancelling() == 0:
+                        tarea["estado"] = "cancelada"   # DELETE sobre la tarea
+                    else:
+                        tarea["estado"] = "cancelada"   # apagado: tambien queda cancelada
+                        raise                            # asi el cancel tiene efecto
                 except Exception as e:
                     # La tarea misma exploto (url malformada, params invalidos en un proceso, etc)
                     tarea["estado"] = "fallida"
@@ -270,41 +288,78 @@ class GestorTareas:
             "tiempo_promedio_ejecucion_s": promedio,
             "workers_ocupados": len(self.en_curso),
             "workers_totales": NUM_WORKERS,
+            "tareas_en_cola": self.cola.qsize(),
+            "aceptando_tareas": self.aceptando,
         }
 
     # -----------------------------------------------------------
     # Apagado ordenado. Lo llama uvicorn antes de cerrar.
-    # 1) Dejo de aceptar tareas nuevas (el endpoint ya no responde)
-    # 2) Aviso a los workers con una pastilla None y espero con limite
-    # 3) Si no termino a tiempo, cancelo lo que quedo corriendo
-    # 4) Volteo el estado a volcados/estado_<timestamp>.json
+    # 1) No acepto tareas nuevas (el POST responde 503)
+    # 2) Las pendientes NO arrancan: quedan cancelada en el registro y
+    #    el worker las saltea al sacarlas de la cola. (La pastilla va
+    #    ULTIMA en la cola (FIFO): si las pendientes no se marcaran, los
+    #    workers las ejecutarian todas antes de llegar a la pastilla, y
+    #    el apagado se estiraria indefinidamente.)
+    # 3) Espero, con limite, a que la cola se procese: join() devuelve
+    #    cuando a todo item le correspondio su task_done() (el worker
+    #    lo hace en el finally), incluida la tarea en curso de cada worker.
+    # 4) Si alguien no termino a tiempo, cancelo SOLO la sub-tarea.
+    #    NUNCA cancelo el worker: el worker atraparia su propia
+    #    CancelledError (el except que marca 'cancelada'), volveria al
+    #    bucle como si nada, y el cancel no tendria efecto.
+    # 5) Dreno lo que quedo en la cola, mando las pastillas y volteo
+    #    el estado a volcados/estado_<timestamp>.json
     # -----------------------------------------------------------
     async def apagar(self):
-        logging.info("Apagando: esparzo %d pastillas en la cola...", len(self.workers))
+        self.aceptando = False
+        logging.info("Apagado ordenado: no acepto mas tareas")
 
-        for _ in self.workers:
-            await self.cola.put(PASTILLA)
+        # (2) Las pendientes quedan canceladas y no se ejecutan.
+        for tarea in self.registro.values():
+            if tarea["estado"] == "pendiente":
+                tarea["estado"] = "cancelada"
+                tarea["error"] = "cancelada durante el apagado"
+                tarea["termino"] = time.time()
 
-        # Espero con limite a que los workers terminen lo que corren
+        # (3) Espero con limite a que se procese lo que corre
         try:
-            await asyncio.wait_for(asyncio.gather(*self.workers), timeout=LIMITE_APAGADO)
-            logging.info("Todos los workers terminaron ordenadamente")
+            await asyncio.wait_for(self.cola.join(), timeout=LIMITE_APAGADO)
+            logging.info("Las tareas en curso terminaron dentro del limite")
         except asyncio.TimeoutError:
             logging.warning(
-                "Los workers no terminaron en %.0fs: cancelo las tareas en curso",
+                "No terminaron en %.0fs: cancelo las tareas en curso",
                 LIMITE_APAGADO,
             )
+            # Cancelo solo las SUB-tareas (la unidad cancelable es la tarea),
+            # nunca el worker, y espero a que procesen la cancelacion.
             for id_tarea, futura in list(self.en_curso.items()):
                 self.registro[id_tarea]["estado"] = "cancelada"
                 futura.cancel()
-            await asyncio.gather(*self.en_curso.values(), return_exceptions=True)
+            en_curso = list(self.en_curso.values())
+            if en_curso:
+                await asyncio.gather(*en_curso, return_exceptions=True)
 
-            # ahora si, ya sin tareas, los workers se van a tomar la pastilla
-            for w in self.workers:
-                w.cancel()
-            await asyncio.gather(*self.workers, return_exceptions=True)
+        # Barrido de la cola: lo que quedo ahi son ids de tareas canceladas
+        # que nadie consumo todavia. Los saco con get_nowait, con su
+        # task_done(), para que las pastillas entren seguro despues.
+        drenadas = 0
+        while not self.cola.empty():
+            try:
+                self.cola.get_nowait()
+                self.cola.task_done()
+                drenadas += 1
+            except asyncio.QueueEmpty:
+                break
+        if drenadas:
+            logging.info("Cola drenada al apagar: %d ids restantes", drenadas)
 
-        # Libero el pool de procesos (sin esperar procesos colgados)
+        # (5) Cola vacia: las pastillas entran al toque con put_nowait y los
+        # workers salen del bucle sin que nadie los cancele.
+        for _ in self.workers:
+            self.cola.put_nowait(PASTILLA)
+        await asyncio.wait_for(asyncio.gather(*self.workers), timeout=LIMITE_APAGADO)
+
+        # Libero el pool de procesos (sin esperar procesos colgados) y volcar
         self.pool_procesos.shutdown(wait=False, cancel_futures=True)
         self._volcar()
 

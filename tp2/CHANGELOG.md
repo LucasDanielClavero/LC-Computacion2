@@ -4,6 +4,76 @@ Historial de versiones del TP2. Cada entry corresponde (aproximadamente) a un co
 
 ---
 
+## v0.3 — Apagado a prueba de carga, tests automatizados y semántica HTTP explícita
+
+**Fecha:** 02/11/2026
+
+### Corrección (bug real, detectado con la nueva suite de tests)
+
+- **Apagado bajo carga.** Con la cola cargada, el apagado viejo podía
+  estirarse indefinidamente: las pastillas van al final de la cola (FIFO),
+  así que los workers ejecutaban todas las pendientes antes de salir, y el
+  "cancel" de emergencia iba sobre el worker, que absorbía su propia
+  `CancelledError` y volvía al bucle (cancel sin efecto). Ahora:
+  1. las `pendiente` quedan `cancelada` ("cancelada durante el apagado") y
+     no arrancan,
+  2. se espera con límite (`LIMITE_APAGADO`) usando `cola.join()` — que
+     incluye las tareas en curso, exactamente lo que pide la consigna,
+  3. si vence el límite, se cancela solo la sub-tarea (nunca el worker) y
+  4. las pastillas entran con `put_nowait` a cola vacía: los workers salen
+     al instante y el apagado siempre es acotado.
+- En el worker, el manejo de `CancelledError` distingue su origen con
+  `Task.cancelling()` (3.11+): cancelación de la sub-tarea (DELETE / apagado)
+  se absorbe marcando estado; cancelación del *worker* se re-lanza, para que
+  el cancel tenga efecto. Probaron esto dos fallas silenciosas: workers que
+  no morían al apagar y un cierre del event loop que se colgaba.
+
+### Docker
+
+- `stop_grace_period: 20s` (mayor que `LIMITE_APAGADO: 10s`): evita que
+  Docker mande `SIGKILL` en pleno apagado/volcado. `restart: unless-stopped`.
+- Verificado `docker compose up --build` + `docker compose stop` end-to-end:
+  apagado ordenado dentro del contenedor y volcado escrito en el volumen.
+
+### Tests automatizados (bonus de la consigna, item 6)
+
+- Nuevo `tests/test_api.py` con **11 pruebas** (`pytest-asyncio`), vía ASGI
+  sin red (`httpx.ASGITransport`): POST inmediato (201), ciclo completo con
+  filtro y estadísticas, `hashear` por executor, validaciones y 404,
+  timeout → `fallida`, **cancelación en ejecución y de pendiente**, 409
+  sobre terminadas, backpressure 503, excepción de tarea y el worker sigue
+  vivo, y **apagado acotado con cola cargada** (el caso que delató el bug).
+- Config: `pytest.ini` (`asyncio_mode=auto`), `conftest.py` agrega `src/` al
+  path, y `requirements.txt` documenta las deps de tests separadas de las de
+  la API.
+- `python -m pytest tests/ -v` ≈ 18 s, 11/11 verdes.
+
+### Semántica HTTP y estadísticas
+
+- `POST /tareas` devuelve **201 Created** (la consigna no fijaba código; usa
+  el canónico REST para recursos creados).
+- `DELETE /tareas/{id}` sobre una tarea ya terminada responde **409
+  Conflict** en vez de un 200 sin efecto.
+- El gestor ahora expone un estado `aceptando`: `POST /tareas` **503**
+  mientras el servidor se apaga ("dejar de aceptar tareas nuevas" de la
+  consigna, explícito también en la capa HTTP).
+- `/estadisticas` agrega `tareas_en_cola` (qsize) y `aceptando_tareas`.
+
+### README
+
+- §2 reescrito el apartado de apagado (nuevo orden paso a paso, con la razón
+  del porqué de cada paso).
+- §1 agrega "Pruebas automatizadas" y tabla de estructura actualizada.
+- §5 limitaciones nuevas: el historial crece sin límite; la pendiente
+  cancelada sigue ocupando su lugar en la cola hasta consumirla.
+- §4 agrega la fila `Task.cancelling()` (cancelar la unidad correcta).
+
+### Pendiente
+
+- [ ] Sección "Lo que aprendiste" del README (es personal de Lucas)
+
+---
+
 ## v0.2 — Correcciones según clases + mediciones + informe
 
 **Fecha:** 01/11/2026

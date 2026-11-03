@@ -55,7 +55,7 @@ class PeticionTarea(BaseModel):
 # ---------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------
-@app.post("/tareas")
+@app.post("/tareas", status_code=201)
 async def crear_tarea(peticion: PeticionTarea):
     if peticion.tipo not in TIPOS_VALIDOS:
         raise HTTPException(
@@ -64,6 +64,10 @@ async def crear_tarea(peticion: PeticionTarea):
         )
     try:
         tarea = app.state.gestor.encolar(peticion.tipo, peticion.params, peticion.timeout_s)
+    except RuntimeError as e:
+        # El servidor esta apagando: rechazo con 503 (consigna: "dejar de
+        # aceptar tareas nuevas" va antes que el apagado del gestor).
+        raise HTTPException(status_code=503, detail=str(e))
     except ColaLlenaError as e:
         # Backpressure (clase 21): la cola alcanzo su maxsize. Rechazamos con
         # 503 Service Unavailable en vez de aceptar trabajo que no podemos hacer.
@@ -71,6 +75,8 @@ async def crear_tarea(peticion: PeticionTarea):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     # Respondo ya: id + estado inicial. La tarea todavia no empezo.
+    # 201 Created: REST pide 201 cuando el POST crea un recurso (y no
+    # especificaba la consigna, asi que uso el codigo canonico).
     return {"id": tarea["id"], "estado": tarea["estado"], "tipo": tarea["tipo"]}
 
 
@@ -94,10 +100,22 @@ async def obtener_tarea(id_tarea: str):
 
 @app.delete("/tareas/{id_tarea}")
 async def cancelar_tarea(id_tarea: str):
-    tarea = app.state.gestor.cancelar(id_tarea)
+    tarea = app.state.gestor.obtener(id_tarea)
     if tarea is None:
         raise HTTPException(status_code=404, detail=f"no existe la tarea '{id_tarea}'")
-    return {"id": tarea["id"], "estado": tarea["estado"]}
+    # Uso OTRA referencia y reviso el estado ANTES de invocar: cancelar()
+    # muta la tarea a 'cancelada', con lo que mirar el estado despues daria
+    # 409 hasta para una pendiente recien cancelada.
+    estado_antes = tarea["estado"]
+    if estado_antes not in ("pendiente", "ejecutando"):
+        # Cancelar lo que ya termino no tiene sentido: 409 Conflict le dice
+        # al cliente la verdad (el recurso existe y ya esta terminado).
+        raise HTTPException(
+            status_code=409,
+            detail=f"la tarea '{id_tarea}' ya termino como '{estado_antes}', no se puede cancelar",
+        )
+    app.state.gestor.cancelar(id_tarea)
+    return {"id": id_tarea, "estado": estado_antes}
 
 
 @app.get("/estadisticas")
