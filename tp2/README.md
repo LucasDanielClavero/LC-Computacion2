@@ -152,3 +152,126 @@ executor.
    `cancelada`.
 6. Al apagar ordenadamente, todo el registro se vuelca a
    `volcados/estado_<timestamp>.json`.
+
+---
+
+## 3) Decisiones de diseño
+
+### ¿Por qué `asyncio.Queue` y no `queue.Queue`?
+
+Porque en este sistema la cola se comparte entre los endpoints y los workers,
+y todos viven en el mismo event loop. Una `queue.Queue` es para threads: si
+un worker hiciera ahí un `get()` con la cola vacía, se bloquearía el hilo
+completo — el server entero, no solo ese worker. Con `asyncio.Queue` la
+espera es un `await`: queda suspendida solo esa corrutina y el loop sigue con
+todo lo demás. Y como el scheduling es cooperativo (el código no se ve
+interrumpido entre un `await` y otro, clase 20), ni la cola ni el registro
+necesitan `Lock` para no corromperse.
+
+### ¿Cómo evitás que una tarea CPU-bound congele la API?
+
+El cálculo de `hashear` no corre en el event loop: sale por
+`loop.run_in_executor(ProcessPoolExecutor, ...)` a otro proceso, y los
+procesos son paralelismo de verdad (los threads no lo dan, por el GIL).
+Mientras se están calculando los hashes, el server sigue atiendo pedidos sin
+problema. En números (medición **M2**): con el hash corriendo dentro del loop
+(existe el flag `en_event_loop`, un bug a propósito), un GET tardó
+**3066 ms**; con executor, **7 ms** en el peor caso.
+
+### ¿Cómo implementaste la cancelación, y qué pasa con los recursos a medio usar?
+
+Tres casos:
+
+- **Pendiente:** la marco `cancelada` en el registro. De una `asyncio.Queue`
+  no se puede sacar algo del medio (es física de la cola); el worker la lee
+  al sacarla y la saltea. El registro en memoria es la única fuente de
+  verdad de los estados.
+- **En ejecución:** de la tarea se cancela su sub-tarea (`cancel()`), que
+  inyecta una `CancelledError` en su próximo `await` (clase 20). El worker la
+  recibe, marca `cancelada` con motivo, libera el slot y sigue con su ciclo.
+  La unidad cancelable es la tarea, nunca el worker.
+- **Al apagar:** no entra trabajo nuevo, las pendientes quedan `cancelada` y
+  no se suben; se alcanza a esperar (con límite) a las en curso; si el límite
+  vence, se las cancela; y al final un volcado del registro a JSON.
+
+Con los recursos no hay limpieza especial, la que sale sola: la
+`ClientSession` está dentro de un `async with` y los `task_done` van al
+`finally`, así que la liberación funciona aunque la corrutina salga por
+cancelación (clase 20). Un caso queda por fuera: un `DELETE` no interrumpe un
+`hashear` ya en ejecución dentro del executor — el proceso no tiene `await`
+donde inyectar la excepción (limitación §6).
+
+### ¿Qué pasa si un worker lanza una excepción no capturada?
+
+Puede pasar de dos niveles distintos:
+
+- **La tarea lanza una excepción.** El worker la atrapa (espera a la
+  sub-tarea dentro de un `try/except Exception`), la marca `fallida` con el
+  mensaje en el campo `error`, y **sigue con su ciclo** — el servicio no se
+  entera.
+- **El bucle del worker lanza una excepción** (un bug mío). Ese worker muere,
+  pero el resto del pool sigue: queda con N-1 workers. La tarea que tenía en
+  curso queda enganchada en `ejecutando` para siempre — es una limitación
+  conocida (§6).
+
+---
+
+## 4) Mediciones
+
+Las tres obligatorias de la consigna, tomadas con `scripts/mediciones.py`
+contra el server levantado (`docker compose up`). El cliente de medición y
+Docker corren en esta máquina: Linux Mint 22.3, CPU 12 núcleos, 15 GB de
+RAM. El server corre adentro del contenedor, con la imagen `python:3.11-slim`
+(Python 3.11.18 sobre Debian 13); el contenedor no tiene límites de CPU, así
+que los cálculos usan los núcleos reales de la máquina. Reproducibles con
+`python3 scripts/mediciones.py` en otra terminal.
+
+### M1 — Concurrencia I/O: 20 descargas secuenciales vs 20 concurrentes
+
+Descargar las mismas 20 URLs de dos formas: 20 tareas de a una URL
+(secuencial) o una sola tarea con las 20 (concurrente).
+
+Secuencial: (20 tareas, 1 URL cada una) | 4.718 s |
+Concurrente: (1 tarea con las 20 URLs) |0.748 s|
+
+En paralelo demora mucho menos que en serie,
+porque una descarga es casi puro esperar la red (~0.23 s por URL) y las
+esperas se pueden encimar: los 20 pedidos salen al mismo tiempo y el total
+queda cerca de lo que tarda la más lenta, no de la suma de todas.
+
+### M2 — El event loop bloqueado: CPU en el loop vs en el executor
+
+Corriendo un hash pesado (~3 segundos), mando un `GET /estadisticas` cada
+50 ms y mido el peor atraso:
+
+| Modo | GETs recibidos en ese lapso | Peor atraso |
+|---|---|---|
+| CPU adentro del loop (`en_event_loop: true`) | **1** | **3066 ms** |
+| CPU afuera, en el executor (modo normal) | 57 | **7.3 ms** |
+
+Reflexión: con el cálculo corriendo adentro del loop, el server queda
+congelado los 3 segundos que dura el hash — hasta una request alcanzó a
+pasar, y tardó lo mismo que el cálculo. Con el executor, el server sigue
+respondiendo con latencia normal, porque el cálculo corre en otro proceso y
+el loop queda libre. La regla que deja en claro: nada de cálculo pesado en
+el event loop. 
+
+### M3 — Techo del pool
+
+Mandar N tareas de 1 s todas de golpe (3 workers) y medir cuánto tarda el
+grupo entero en terminar:
+
+| N | Tiempo total | Techo teórico `ceil(N/3)×1s` | Peor atraso (espera en cola) |
+|---|---|---|---|
+| 1 | 1.03 s | 0.33 s | 2 ms |
+| 3 | 1.06 s | 1.00 s | 2 ms |
+| 6 | 1.99 s | 2.00 s | 983 ms |
+| 12 | 4.01 s | 4.00 s | 2.948 s |
+| 24 | 7.88 s | 8.00 s | 6.875 s |
+| 48 | 15.69 s | 16.00 s | 14.685 s |
+| 96 | 31.46 s | 32.00 s | 30.397 s |
+
+Reflexión: el tiempo total se comporta exacto como el techo de 3 workers
+dando que seria mas o menos 3 tareas por segundo, sin
+importar cuánto suba la cola. Lo único que crece es la espera del último en
+llegar 
