@@ -91,3 +91,64 @@ source .venv/bin/activate
 pip install -r requirements.txt   # pytest, pytest-asyncio y httpx están acá
 python -m pytest tests/ -v
 ```
+
+---
+
+## 2) Diagrama de arquitectura
+
+```
+   Cliente HTTP
+        │
+        ▼
+┌───────────────────────────┐
+│ uvicorn                   │  el event loop vive acá
+│ (servidor ASGI)           │  (socket, protocolo HTTP, epoll)
+└────────────┬──────────────┘
+             ▼
+┌───────────────────────────┐
+│ api.py  (FastAPI)         │  los 5 endpoints
+│ POST /tareas              │──── tarea nueva ────┐
+│ GET /tareas               │                     ▼
+│ GET /tareas/{id}          │            ┌──────────────────────┐
+│ DELETE /tareas/{id}       │            │ asyncio.Queue        │
+│ GET /estadisticas         │            │ maxsize=100          │
+└────────────▲──────────────┘            │ (backpressure)       │
+             │                           └──────────┬───────────┘
+   estado/resultado                                │
+   (vuelven del registro)                          ▼
+             │                           ┌──────────────────────┐
+             └───────────────────────────│ gestor.py            │
+                                         │ 3 workers (corrutinas│
+                                         │ del mismo event loop)│
+                                         │ registro en memoria  │
+                                         └───┬──────────────┬───┘
+                                   I/O-bound │          CPU-bound │
+                                             ▼                  ▼
+                                    await directo        run_in_executor
+                                    (esperar,            (hashear: sale a
+                                     descargar)           otro proceso)
+```
+
+Este es el esquema de las tres capas: **uvicorn tiene el event loop** (el
+socket, el protocolo HTTP y por debajo el epoll de la clase 17), **FastAPI es
+la aplicación** (rutas y respuestas) y encima va lo mío: cola + workers +
+executor.
+
+**Flujo de una tarea:**
+
+1. El `POST /tareas` valida tipo y params, y chequea la cola. Si está llena
+   responde `503` (backpressure): mejor rechazar que aceptar trabajo que va a
+   quedar eternamente en espera.
+2. Si acepta, responde al instante `201` con `{"id": "t1", "estado":
+   "pendiente"}` — se espera cero a que la tarea termine.
+3. Un worker saca el id de la cola, la marca `ejecutando` y la corre como
+   **sub-tarea propia** (`create_task`) envuelta en `wait_for(timeout)`. Acá
+   se apoyan el timeout y la cancelación.
+4. Según el tipo: `esperar` hace `await asyncio.sleep()` (I/O simulado),
+   `descargar` baja todas las URLs con `gather` + `ClientSession`, y `hashear`
+   se va al `ProcessPoolExecutor` (sí, otro proceso) para que el cálculo no
+   frene el loop.
+5. Estado final: `completada`, `fallida` (con motivo o por timeout vencido) o
+   `cancelada`.
+6. Al apagar ordenadamente, todo el registro se vuelca a
+   `volcados/estado_<timestamp>.json`.
