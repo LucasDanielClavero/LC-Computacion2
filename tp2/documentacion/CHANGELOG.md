@@ -4,6 +4,25 @@ Historial de versiones del TP2. Cada entry corresponde (aproximadamente) a un co
 
 ---
 
+## v0.4 — 02/11/2026
+
+### Cambios
+
+- Reestructuro el repo: `documentacion/` concentra el material que no es
+  código (comandos.md y CHANGELOG.md); el README queda en la raíz.
+- Nuevo `documentacion/comandos.md`: lista completa de los comandos para
+  probar la API, cada uno con la explicación de qué hace y qué responde; el
+  README queda más corto y enlaza al detalle.
+- README §1 reescrito: descripción, tipos de tarea, estructura del proyecto,
+  cómo arrancar, comandos de ejemplo y cómo correr los tests.
+
+### Pendiente
+
+- Continuar el informe: decisiones de diseño, mediciones, conceptos del
+  curso, limitaciones y "lo que aprendiste" (personal).
+
+---
+
 ## v0.3 — Apagado a prueba de carga, tests automatizados y semántica HTTP explícita
 
 **Fecha:** 02/11/2026
@@ -70,7 +89,7 @@ Historial de versiones del TP2. Cada entry corresponde (aproximadamente) a un co
 
 ### Pendiente
 
-- [ ] Sección "Lo que aprendiste" del README (es personal de Lucas)
+- [ ] Sección "Lo que aprendiste" del README
 
 ---
 
@@ -129,7 +148,7 @@ Historial de versiones del TP2. Cada entry corresponde (aproximadamente) a un co
 
 ### Pendiente
 
-- [ ] Sección "Lo que aprendiste" del README (es personal de Lucas)
+- [ ] Sección "Lo que aprendiste" del README
 - [ ] Bonus opcionales (todavía nada)
 - [ ] ultima revisión del documento entero antes de la entrega
 
